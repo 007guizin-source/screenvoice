@@ -27,6 +27,11 @@ let myName = "";
 let localStream = null;
 let screenStream = null;
 let micEnabled = true;
+let outgoingAudioStream = null;
+let audioContext = null;
+let audioDestination = null;
+let micAudioSource = null;
+let screenAudioSource = null;
 const peers = new Map();
 const remoteStreams = new Map();
 
@@ -155,6 +160,49 @@ async function startMicrophone() {
   return localStream;
 }
 
+
+function ensureAudioMixer() {
+  if (audioDestination) return audioDestination;
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  audioDestination = audioContext.createMediaStreamDestination();
+  outgoingAudioStream = audioDestination.stream;
+  return audioDestination;
+}
+
+async function updateOutgoingAudio() {
+  if (!localStream && !screenStream) return;
+  const destination = ensureAudioMixer();
+
+  try {
+    if (audioContext.state === "suspended") await audioContext.resume();
+  } catch {}
+
+  if (micAudioSource) {
+    try { micAudioSource.disconnect(); } catch {}
+    micAudioSource = null;
+  }
+  if (screenAudioSource) {
+    try { screenAudioSource.disconnect(); } catch {}
+    screenAudioSource = null;
+  }
+
+  if (localStream?.getAudioTracks().length) {
+    micAudioSource = audioContext.createMediaStreamSource(new MediaStream(localStream.getAudioTracks()));
+    micAudioSource.connect(destination);
+  }
+
+  if (screenStream?.getAudioTracks().length) {
+    screenAudioSource = audioContext.createMediaStreamSource(new MediaStream(screenStream.getAudioTracks()));
+    screenAudioSource.connect(destination);
+  }
+
+  const mixedTrack = outgoingAudioStream?.getAudioTracks()[0] || null;
+  for (const peer of peers.values()) {
+    if (!peer.audioSender) continue;
+    await peer.audioSender.replaceTrack(mixedTrack);
+  }
+}
+
 function createPeer(remoteId, remoteName, initiator) {
   if (peers.has(remoteId)) return peers.get(remoteId);
 
@@ -173,9 +221,11 @@ function createPeer(remoteId, remoteName, initiator) {
   const videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
   peer.videoSender = videoTransceiver.sender;
 
-  if (localStream) {
-    localStream.getAudioTracks().forEach(track => pc.addTrack(track, localStream));
-  }
+  const audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  peer.audioSender = audioTransceiver.sender;
+
+  // Envia um único áudio misturado (microfone + áudio da tela/aba, quando disponível).
+  updateOutgoingAudio().catch(error => console.warn("Áudio de saída:", error));
 
   pc.onicecandidate = event => {
     if (event.candidate) {
@@ -446,11 +496,14 @@ screenBtn.onclick = async () => {
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { cursor: "motion" },
-      audio: false
+      // Captura também o áudio da aba/sistema quando o navegador oferecer essa opção.
+      audio: true
     });
 
     const track = screenStream.getVideoTracks()[0];
     if (!track) throw new Error("Nenhuma faixa de vídeo foi disponibilizada.");
+
+    await updateOutgoingAudio();
 
     screenBtn.innerHTML = "⏹️ <span>Parar compartilhamento</span>";
     screenBtn.classList.add("active");
@@ -491,6 +544,7 @@ async function stopScreen() {
     if (videoSender) replacePromises.push(videoSender.replaceTrack(null));
   }
   await Promise.allSettled(replacePromises);
+  await updateOutgoingAudio();
 };
 
 function renderRemoteStream(id, stream, name) {
