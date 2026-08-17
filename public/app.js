@@ -27,11 +27,7 @@ let myName = "";
 let localStream = null;
 let screenStream = null;
 let micEnabled = true;
-let outgoingAudioStream = null;
-let audioContext = null;
-let audioDestination = null;
-let micAudioSource = null;
-let screenAudioSource = null;
+const remoteAudioElements = new Map();
 const peers = new Map();
 const remoteStreams = new Map();
 
@@ -161,45 +157,20 @@ async function startMicrophone() {
 }
 
 
-function ensureAudioMixer() {
-  if (audioDestination) return audioDestination;
-  audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  audioDestination = audioContext.createMediaStreamDestination();
-  outgoingAudioStream = audioDestination.stream;
-  return audioDestination;
-}
-
-async function updateOutgoingAudio() {
-  if (!localStream && !screenStream) return;
-  const destination = ensureAudioMixer();
-
-  try {
-    if (audioContext.state === "suspended") await audioContext.resume();
-  } catch {}
-
-  if (micAudioSource) {
-    try { micAudioSource.disconnect(); } catch {}
-    micAudioSource = null;
-  }
-  if (screenAudioSource) {
-    try { screenAudioSource.disconnect(); } catch {}
-    screenAudioSource = null;
-  }
-
-  if (localStream?.getAudioTracks().length) {
-    micAudioSource = audioContext.createMediaStreamSource(new MediaStream(localStream.getAudioTracks()));
-    micAudioSource.connect(destination);
-  }
-
-  if (screenStream?.getAudioTracks().length) {
-    screenAudioSource = audioContext.createMediaStreamSource(new MediaStream(screenStream.getAudioTracks()));
-    screenAudioSource.connect(destination);
-  }
-
-  const mixedTrack = outgoingAudioStream?.getAudioTracks()[0] || null;
+function updateOutgoingAudio() {
   for (const peer of peers.values()) {
-    if (!peer.audioSender) continue;
-    await peer.audioSender.replaceTrack(mixedTrack);
+    if (peer.micSender) {
+      const micTrack = localStream?.getAudioTracks()[0] || null;
+      peer.micSender.replaceTrack(micTrack).catch(error =>
+        console.warn("Faixa do microfone:", error)
+      );
+    }
+    if (peer.screenAudioSender) {
+      const screenTrack = screenStream?.getAudioTracks()[0] || null;
+      peer.screenAudioSender.replaceTrack(screenTrack).catch(error =>
+        console.warn("Faixa de áudio da tela:", error)
+      );
+    }
   }
 }
 
@@ -221,11 +192,13 @@ function createPeer(remoteId, remoteName, initiator) {
   const videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
   peer.videoSender = videoTransceiver.sender;
 
-  const audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
-  peer.audioSender = audioTransceiver.sender;
+  const micTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  peer.micSender = micTransceiver.sender;
 
-  // Envia um único áudio misturado (microfone + áudio da tela/aba, quando disponível).
-  updateOutgoingAudio().catch(error => console.warn("Áudio de saída:", error));
+  const screenAudioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  peer.screenAudioSender = screenAudioTransceiver.sender;
+
+  updateOutgoingAudio();
 
   pc.onicecandidate = event => {
     if (event.candidate) {
@@ -250,13 +223,23 @@ function createPeer(remoteId, remoteName, initiator) {
     renderRemoteStream(remoteId, stream, peer.remoteName);
 
     event.track.onended = () => {
-      if (stream.getTracks().some(track => track.id === event.track.id)) {
-        stream.removeTrack(event.track);
+      stream.removeTrack(event.track);
+
+      const audioSet = remoteAudioElements.get(remoteId);
+      const audio = audioSet?.get(event.track.id);
+      if (audio) {
+        audio.srcObject = null;
+        audio.remove();
+        audioSet.delete(event.track.id);
       }
+
       if (stream.getTracks().length === 0) {
         remoteStreams.delete(remoteId);
+        remoteAudioElements.delete(remoteId);
         document.getElementById(`screen-${remoteId}`)?.remove();
         updateEmptyStage();
+      } else {
+        renderRemoteStream(remoteId, stream, peer.remoteName);
       }
     };
   };
@@ -406,23 +389,30 @@ function escapeHtml(value) {
 
 async function unlockRemoteAudio() {
   audioUnlocked = true;
-  const videos = [...document.querySelectorAll(".remote-screen-video")];
+  const audios = [...document.querySelectorAll(".remote-screen-audio")];
   let played = 0;
-  for (const video of videos) {
+
+  for (const audio of audios) {
     try {
-      video.muted = false;
-      await video.play();
+      audio.muted = false;
+      audio.volume = 1;
+      await audio.play();
       played++;
     } catch (error) {
       console.warn("Áudio remoto ainda bloqueado:", error);
     }
   }
+
   if (audioBtn) {
-    audioBtn.textContent = played || videos.length ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
+    audioBtn.textContent = played || audios.length ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
     audioBtn.classList.toggle("active", played > 0 || audioUnlocked);
   }
-  if (played > 0) showToast("Áudio da transmissão ativado.");
-  else if (videos.length) showToast("Toque novamente no botão para liberar o áudio.");
+
+  if (played > 0) {
+    showToast("Áudio da transmissão ativado.");
+  } else if (audios.length) {
+    showToast("Toque novamente no botão para liberar o áudio.");
+  }
 }
 
 async function requestFullscreenVideo(video) {
@@ -503,7 +493,14 @@ screenBtn.onclick = async () => {
     const track = screenStream.getVideoTracks()[0];
     if (!track) throw new Error("Nenhuma faixa de vídeo foi disponibilizada.");
 
-    await updateOutgoingAudio();
+    const audioTracks = screenStream.getAudioTracks();
+    if (audioTracks.length) {
+      showToast("Áudio da tela capturado.");
+    } else {
+      showToast("Tela sem áudio. No Chrome, selecione uma aba e marque 'Compartilhar áudio' ou 'Compartilhar áudio do sistema'.");
+    }
+
+    updateOutgoingAudio();
 
     screenBtn.innerHTML = "⏹️ <span>Parar compartilhamento</span>";
     screenBtn.classList.add("active");
@@ -563,6 +560,7 @@ function renderRemoteStream(id, stream, name) {
     video.playsInline = true;
     video.setAttribute("playsinline", "");
     video.controls = false;
+    video.muted = true;
     video.className = "remote-screen-video";
     video.id = `video-${id}`;
 
@@ -573,27 +571,19 @@ function renderRemoteStream(id, stream, name) {
     soundButton.className = "video-action";
     soundButton.type = "button";
     soundButton.textContent = "🔊 Ativar áudio";
-    soundButton.onclick = async () => {
-      audioUnlocked = true;
-      video.muted = false;
-      try {
-        await video.play();
-        soundButton.textContent = "🔊 Áudio ativo";
-        showToast("Áudio da transmissão ativado.");
-      } catch {
-        showToast("Toque novamente para liberar o áudio.");
-      }
-      if (audioBtn) {
-        audioBtn.textContent = "🔊 Áudio ativado";
-        audioBtn.classList.add("active");
-      }
+    soundButton.onclick = async (event) => {
+      event.stopPropagation();
+      await unlockRemoteAudio();
     };
 
     const fullscreenButton = document.createElement("button");
     fullscreenButton.className = "video-action";
     fullscreenButton.type = "button";
     fullscreenButton.textContent = "⛶ Tela cheia";
-    fullscreenButton.onclick = () => requestFullscreenVideo(video);
+    fullscreenButton.onclick = (event) => {
+      event.stopPropagation();
+      requestFullscreenVideo(video);
+    };
 
     actions.append(soundButton, fullscreenButton);
     viewer.append(video, actions);
@@ -607,20 +597,45 @@ function renderRemoteStream(id, stream, name) {
   }
 
   const video = document.getElementById(`video-${id}`);
-  if (video.srcObject !== stream) video.srcObject = stream;
-
-  // Keep audio enabled. Mobile browsers may still require one user gesture;
-  // the visible "Ativar áudio" button provides that gesture.
-  video.muted = false;
-  video.play().catch(() => {
-    if (audioBtn) {
-      audioBtn.textContent = "🔊 Ativar áudio";
-      audioBtn.classList.remove("active");
+  const videoTrack = stream.getVideoTracks()[0];
+  if (videoTrack) {
+    const videoStream = new MediaStream([videoTrack]);
+    if (!video.srcObject || video.srcObject.getVideoTracks()[0]?.id !== videoTrack.id) {
+      video.srcObject = videoStream;
     }
-  });
+    video.muted = true;
+    video.play().catch(() => {});
+  }
+
+  let audioSet = remoteAudioElements.get(id);
+  if (!audioSet) {
+    audioSet = new Map();
+    remoteAudioElements.set(id, audioSet);
+  }
+
+  for (const track of stream.getAudioTracks()) {
+    if (audioSet.has(track.id)) continue;
+
+    const audio = document.createElement("audio");
+    audio.autoplay = false;
+    audio.controls = false;
+    audio.muted = false;
+    audio.volume = 1;
+    audio.className = "remote-screen-audio";
+    audio.srcObject = new MediaStream([track]);
+    wrap.appendChild(audio);
+    audioSet.set(track.id, audio);
+
+    track.onunmute = () => {
+      if (audioUnlocked) audio.play().catch(() => {});
+    };
+
+    if (audioUnlocked) audio.play().catch(() => {});
+  }
 
   updateEmptyStage();
 }
+
 screensEl.addEventListener("click", () => {
   // A tap inside the transmission is also a valid user gesture on mobile.
   if (!audioUnlocked) unlockRemoteAudio();

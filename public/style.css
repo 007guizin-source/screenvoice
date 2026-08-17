@@ -177,3 +177,6 @@ input:focus { border-color: #fff; }
     gap: 8px;
   }
 }
+
+
+.remote-screen-audio { display: none; }
