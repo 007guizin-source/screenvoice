@@ -18,6 +18,9 @@ const leaveBtn = document.getElementById("leaveBtn");
 const copyBtn = document.getElementById("copyBtn");
 const statusEl = document.getElementById("status");
 const toast = document.getElementById("toast");
+const audioBtn = document.getElementById("audioBtn");
+
+let audioUnlocked = false;
 
 let currentRoom = null;
 let myName = "";
@@ -351,6 +354,54 @@ function escapeHtml(value) {
   }[c]));
 }
 
+async function unlockRemoteAudio() {
+  audioUnlocked = true;
+  const videos = [...document.querySelectorAll(".remote-screen-video")];
+  let played = 0;
+  for (const video of videos) {
+    try {
+      video.muted = false;
+      await video.play();
+      played++;
+    } catch (error) {
+      console.warn("Áudio remoto ainda bloqueado:", error);
+    }
+  }
+  if (audioBtn) {
+    audioBtn.textContent = played || videos.length ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
+    audioBtn.classList.toggle("active", played > 0 || audioUnlocked);
+  }
+  if (played > 0) showToast("Áudio da transmissão ativado.");
+  else if (videos.length) showToast("Toque novamente no botão para liberar o áudio.");
+}
+
+async function requestFullscreenVideo(video) {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen?.();
+      return;
+    }
+
+    if (video.requestFullscreen) {
+      await video.requestFullscreen();
+      return;
+    }
+
+    // iPhone/iPad Safari uses the non-standard video fullscreen API.
+    if (typeof video.webkitEnterFullscreen === "function") {
+      video.webkitEnterFullscreen();
+      return;
+    }
+
+    showToast("Tela cheia não é suportada por este navegador.");
+  } catch (error) {
+    console.warn("Tela cheia:", error);
+    showToast("Toque novamente no botão de tela cheia.");
+  }
+}
+
+if (audioBtn) audioBtn.onclick = unlockRemoteAudio;
+
 async function toggleMic() {
   try {
     if (!localStream) await startMicrophone();
@@ -450,28 +501,76 @@ function renderRemoteStream(id, stream, name) {
     wrap.className = "screen-wrap";
     wrap.id = `screen-${id}`;
 
+    const viewer = document.createElement("div");
+    viewer.className = "video-viewer";
+
     const video = document.createElement("video");
     video.autoplay = true;
     video.playsInline = true;
+    video.setAttribute("playsinline", "");
     video.controls = false;
+    video.className = "remote-screen-video";
     video.id = `video-${id}`;
+
+    const actions = document.createElement("div");
+    actions.className = "video-actions";
+
+    const soundButton = document.createElement("button");
+    soundButton.className = "video-action";
+    soundButton.type = "button";
+    soundButton.textContent = "🔊 Ativar áudio";
+    soundButton.onclick = async () => {
+      audioUnlocked = true;
+      video.muted = false;
+      try {
+        await video.play();
+        soundButton.textContent = "🔊 Áudio ativo";
+        showToast("Áudio da transmissão ativado.");
+      } catch {
+        showToast("Toque novamente para liberar o áudio.");
+      }
+      if (audioBtn) {
+        audioBtn.textContent = "🔊 Áudio ativado";
+        audioBtn.classList.add("active");
+      }
+    };
+
+    const fullscreenButton = document.createElement("button");
+    fullscreenButton.className = "video-action";
+    fullscreenButton.type = "button";
+    fullscreenButton.textContent = "⛶ Tela cheia";
+    fullscreenButton.onclick = () => requestFullscreenVideo(video);
+
+    actions.append(soundButton, fullscreenButton);
+    viewer.append(video, actions);
 
     const label = document.createElement("div");
     label.className = "screen-name";
     label.textContent = name;
 
-    wrap.append(video, label);
+    wrap.append(viewer, label);
     screensEl.appendChild(wrap);
   }
 
   const video = document.getElementById(`video-${id}`);
   if (video.srcObject !== stream) video.srcObject = stream;
+
+  // Keep audio enabled. Mobile browsers may still require one user gesture;
+  // the visible "Ativar áudio" button provides that gesture.
   video.muted = false;
   video.play().catch(() => {
-    // O navegador pode exigir uma interação antes de reproduzir áudio.
+    if (audioBtn) {
+      audioBtn.textContent = "🔊 Ativar áudio";
+      audioBtn.classList.remove("active");
+    }
   });
+
   updateEmptyStage();
 }
+screensEl.addEventListener("click", () => {
+  // A tap inside the transmission is also a valid user gesture on mobile.
+  if (!audioUnlocked) unlockRemoteAudio();
+});
 
 copyBtn.onclick = async () => {
   const url = location.href;
