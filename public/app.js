@@ -28,6 +28,7 @@ let localStream = null;
 let screenStream = null;
 let micEnabled = true;
 const remoteAudioElements = new Map();
+const remoteAudioMixers = new Map();
 const peers = new Map();
 const remoteStreams = new Map();
 
@@ -228,9 +229,11 @@ function createPeer(remoteId, remoteName, initiator) {
   peer.videoSender = videoTransceiver.sender;
 
   const micTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  peer.micTransceiver = micTransceiver;
   peer.micSender = micTransceiver.sender;
 
   const screenAudioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+  peer.screenAudioTransceiver = screenAudioTransceiver;
   peer.screenAudioSender = screenAudioTransceiver.sender;
 
   // Prioriza Opus, que é o codec de áudio de maior qualidade/eficiência
@@ -288,13 +291,19 @@ function createPeer(remoteId, remoteName, initiator) {
 
     renderRemoteStream(remoteId, stream, peer.remoteName);
 
+    if (event.track.kind === "audio") {
+      setupRemoteAudioTrack(remoteId, peer, event.track, event.transceiver);
+    }
+
     event.track.onended = () => {
       stream.removeTrack(event.track);
+      removeRemoteAudioTrack(remoteId, event.track.id);
       renderRemoteStream(remoteId, stream, peer.remoteName);
 
       if (stream.getTracks().length === 0) {
         remoteStreams.delete(remoteId);
         remoteAudioElements.delete(remoteId);
+        destroyRemoteAudioMixer(remoteId);
         document.getElementById(`screen-${remoteId}`)?.remove();
         updateEmptyStage();
       }
@@ -417,6 +426,8 @@ function removePeer(id) {
     peers.delete(id);
   }
   remoteStreams.delete(id);
+  remoteAudioElements.delete(id);
+  destroyRemoteAudioMixer(id);
   document.getElementById(`screen-${id}`)?.remove();
   updateEmptyStage();
 }
@@ -446,31 +457,40 @@ function escapeHtml(value) {
 
 async function unlockRemoteAudio() {
   audioUnlocked = true;
-  const audios = [...document.querySelectorAll(".remote-screen-audio")];
-  let played = 0;
+  let resumed = 0;
 
-  for (const audio of audios) {
+  for (const mixer of remoteAudioMixers.values()) {
     try {
-      audio.muted = false;
-      audio.volume = 1;
-      await audio.play();
-      played++;
+      await mixer.context.resume();
+      resumed++;
     } catch (error) {
       console.warn("Áudio remoto ainda bloqueado:", error);
     }
   }
 
-  if (audioBtn) {
-    audioBtn.textContent = played || audios.length ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
-    audioBtn.classList.toggle("active", played > 0 || audioUnlocked);
+  const audios = [...document.querySelectorAll(".remote-screen-audio")];
+  for (const audio of audios) {
+    try {
+      audio.muted = false;
+      audio.volume = 1;
+      if (audio.srcObject) await audio.play();
+    } catch (error) {
+      console.warn("Fallback de áudio remoto:", error);
+    }
   }
 
-  if (played > 0) {
-    showToast("Áudio da transmissão ativado.");
-  } else if (audios.length) {
+  if (audioBtn) {
+    audioBtn.textContent = (resumed || audios.length) ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
+    audioBtn.classList.toggle("active", resumed > 0 || audioUnlocked);
+  }
+
+  if (resumed > 0 || audios.some(audio => audio.srcObject)) {
+    showToast("Áudio ativado. Voz priorizada sobre o áudio da transmissão.");
+  } else {
     showToast("Toque novamente no botão para liberar o áudio.");
   }
 }
+
 async function requestFullscreenVideo(video) {
   try {
     if (document.fullscreenElement) {
@@ -608,6 +628,102 @@ async function stopScreen() {
   await updateOutgoingAudio();
 };
 
+function getAudioContextClass() {
+  return window.AudioContext || window.webkitAudioContext;
+}
+
+function ensureRemoteAudioMixer(id) {
+  let mixer = remoteAudioMixers.get(id);
+  if (mixer) return mixer;
+
+  const AudioContextClass = getAudioContextClass();
+  if (!AudioContextClass) return null;
+
+  const context = new AudioContextClass();
+  const destination = context.createMediaStreamDestination();
+  const micGain = context.createGain();
+  const screenGain = context.createGain();
+
+  // Voz em volume normal; áudio compartilhado reduzido para não cobrir a fala.
+  micGain.gain.value = 1.0;
+  screenGain.gain.value = 0.45;
+
+  micGain.connect(destination);
+  screenGain.connect(destination);
+
+  mixer = {
+    context,
+    destination,
+    micGain,
+    screenGain,
+    sources: new Map()
+  };
+  remoteAudioMixers.set(id, mixer);
+
+  const audio = remoteAudioElements.get(id);
+  if (audio) {
+    audio.srcObject = destination.stream;
+    audio.muted = false;
+    audio.volume = 1;
+    if (audioUnlocked) audio.play().catch(() => {});
+  }
+
+  return mixer;
+}
+
+function setupRemoteAudioTrack(id, peer, track, transceiver) {
+  const mixer = ensureRemoteAudioMixer(id);
+  if (!mixer) return;
+
+  const mid = transceiver?.mid;
+  let type = "mic";
+
+  if (mid && peer.screenAudioTransceiver?.mid === mid) {
+    type = "screen";
+  } else if (mid && peer.micTransceiver?.mid === mid) {
+    type = "mic";
+  } else {
+    // Fallback para navegadores que não expõem o MID no evento ontrack.
+    const existingTypes = [...mixer.sources.values()].map(source => source.type);
+    type = existingTypes.includes("mic") ? "screen" : "mic";
+  }
+
+  const previous = mixer.sources.get(track.id);
+  if (previous) return;
+
+  const source = mixer.context.createMediaStreamSource(new MediaStream([track]));
+  const gain = type === "screen" ? mixer.screenGain : mixer.micGain;
+  source.connect(gain);
+  mixer.sources.set(track.id, { source, type, gain });
+
+  if (audioUnlocked) {
+    mixer.context.resume().catch(() => {});
+  }
+}
+
+function removeRemoteAudioTrack(id, trackId) {
+  const mixer = remoteAudioMixers.get(id);
+  if (!mixer) return;
+
+  const item = mixer.sources.get(trackId);
+  if (!item) return;
+
+  try { item.source.disconnect(); } catch {}
+  mixer.sources.delete(trackId);
+}
+
+function destroyRemoteAudioMixer(id) {
+  const mixer = remoteAudioMixers.get(id);
+  if (!mixer) return;
+
+  for (const item of mixer.sources.values()) {
+    try { item.source.disconnect(); } catch {}
+  }
+  mixer.sources.clear();
+  mixer.context.close().catch(() => {});
+  remoteAudioMixers.delete(id);
+}
+
 function renderRemoteStream(id, stream, name) {
   let wrap = document.getElementById(`screen-${id}`);
 
@@ -682,28 +798,13 @@ function renderRemoteStream(id, stream, name) {
     video.srcObject = null;
   }
 
-  // Um único elemento de áudio por pessoa reproduz as duas faixas WebRTC
-  // (voz + áudio da tela). Isso evita competição entre vários elementos
-  // de áudio e reduz o bug em que a voz para de ser ouvida.
+  // O áudio remoto é mixado separadamente: voz em 100% e áudio da
+  // transmissão em 45%. Assim o áudio compartilhado não cobre a fala.
   const audio = remoteAudioElements.get(id);
-  const audioTracks = stream.getAudioTracks();
-
-  if (audioTracks.length) {
-    const currentIds = (audio.srcObject?.getAudioTracks?.() || []).map(t => t.id).join(",");
-    const nextIds = audioTracks.map(t => t.id).join(",");
-    if (currentIds !== nextIds) {
-      audio.srcObject = new MediaStream(audioTracks);
-    }
-
+  if (audio && audioUnlocked) {
     audio.muted = false;
     audio.volume = 1;
-
-    if (audioUnlocked) {
-      audio.play().catch(error => console.warn("Reprodução de áudio remoto:", error));
-    }
-  } else {
-    audio.srcObject = null;
-    audio.pause();
+    audio.play().catch(error => console.warn("Reprodução de áudio remoto:", error));
   }
 
   updateEmptyStage();
@@ -727,6 +828,8 @@ leaveBtn.onclick = async () => {
   await stopScreen();
   peers.forEach(({ pc }) => pc.close());
   peers.clear();
+  for (const id of [...remoteAudioMixers.keys()]) destroyRemoteAudioMixer(id);
+  remoteAudioElements.clear();
   remoteStreams.clear();
   if (localStream) localStream.getTracks().forEach(t => t.stop());
   localStream = null;
