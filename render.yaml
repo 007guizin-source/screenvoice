@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: screenvoice
-    runtime: node
-    buildCommand: npm install
-    startCommand: npm start
