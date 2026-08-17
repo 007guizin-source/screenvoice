@@ -180,3 +180,15 @@ input:focus { border-color: #fff; }
 
 
 .remote-screen-audio { display: none; }
+
+
+.developer-credit {
+  margin: 14px 0 0;
+  text-align: center;
+  color: #858d9e;
+  font-size: 11px;
+}
+.developer-credit span {
+  color: #3b82f6;
+  font-weight: 600;
+}
