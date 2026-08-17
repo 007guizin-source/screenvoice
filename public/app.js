@@ -118,8 +118,12 @@ async function join(roomId, name) {
     renderPeople(result.users.concat([{ socketId: socket.id, name: myName }]));
 
     try {
+      // Request and enable the microphone immediately when entering the room.
+      // The browser may show its permission prompt the first time.
       await startMicrophone();
-      statusEl.textContent = "Conectado";
+      micEnabled = true;
+      updateMicButton();
+      statusEl.textContent = "Conectado — microfone ativo";
     } catch (error) {
       statusEl.textContent = "Conectado — microfone bloqueado";
       handleMicError(error);
@@ -142,20 +146,39 @@ async function startMicrophone() {
     throw error;
   }
 
-  localStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: false,
-      channelCount: 1,
-      sampleRate: 48000,
-      sampleSize: 16
-    },
-    video: false
-  });
+  const preferredAudio = {
+    echoCancellation: true,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 1,
+    sampleRate: 48000,
+    sampleSize: 16
+  };
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: preferredAudio,
+      video: false
+    });
+  } catch (error) {
+    // Some mobile browsers reject advanced constraints. Fall back to a
+    // simple microphone request instead of leaving the user without audio.
+    console.warn("Fallback do microfone:", error);
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: false
+    });
+  }
+
+  const micTrack = localStream.getAudioTracks()[0];
+  if (micTrack) {
+    micTrack.enabled = true;
+    micTrack.contentHint = "speech";
+  }
 
   micEnabled = true;
   updateMicButton();
+  updateOutgoingAudio();
   return localStream;
 }
 
@@ -175,6 +198,15 @@ function updateOutgoingAudio() {
       );
     }
   }
+}
+
+function awaitSafeSetSenderParameters(sender, params) {
+  if (typeof sender.setParameters === "function") {
+    return sender.setParameters(params).catch(error => {
+      console.warn("setParameters:", error);
+    });
+  }
+  return Promise.resolve();
 }
 
 function createPeer(remoteId, remoteName, initiator) {
@@ -218,6 +250,18 @@ function createPeer(remoteId, remoteName, initiator) {
     }
   } catch (error) {
     console.warn("Não foi possível priorizar Opus:", error);
+  }
+
+  // Give the microphone enough Opus bitrate for clear speech and avoid
+  // aggressive low-quality voice encoding when the connection allows it.
+  try {
+    const params = micTransceiver.sender.getParameters();
+    params.encodings = params.encodings?.length ? params.encodings : [{}];
+    params.encodings[0].maxBitrate = 64000;
+    params.encodings[0].networkPriority = "high";
+    awaitSafeSetSenderParameters(micTransceiver.sender, params);
+  } catch (error) {
+    console.warn("Não foi possível ajustar a qualidade do microfone:", error);
   }
 
   updateOutgoingAudio();

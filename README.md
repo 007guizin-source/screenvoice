@@ -30,3 +30,7 @@ O aplicativo usa um servidor STUN público do Google. Isso funciona em muitas re
 - Os vídeos remotos usam `playsinline` e controles próprios, evitando que a reprodução fique presa em um comportamento incompatível com celular.
 - O compartilhamento de tela continua dependente do suporte do navegador/dispositivo: em alguns celulares, principalmente iPhone/iPad, o navegador pode não permitir `getDisplayMedia`.
 - Para microfone e compartilhamento de tela, o site precisa estar em HTTPS (o Render fornece HTTPS no endereço público).
+
+
+## Microfone
+O microfone é solicitado e ativado automaticamente ao entrar na sala. O navegador pode pedir permissão na primeira vez.
