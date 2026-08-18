@@ -2,5 +2,5 @@ services:
   - type: web
     name: screenvoice
     runtime: node
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: npm start
