@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams, useLocation, useNavigate } from 'react-router-dom';
-import { io } from 'socket.io-client';
-import { ICE_SERVERS } from './webrtc.js';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { io } from "socket.io-client";
+import { ICE_SERVERS } from "./webrtc.js";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
 
@@ -10,34 +10,47 @@ export default function Room() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const initialName = location.state?.name || '';
+  const initialName = location.state?.name || "";
 
   const [name, setName] = useState(initialName);
-  const [nameInput, setNameInput] = useState('');
+  const [nameInput, setNameInput] = useState("");
   const [joined, setJoined] = useState(Boolean(initialName));
-
   const [micOn, setMicOn] = useState(true);
   const [sharing, setSharing] = useState(false);
-  const [participants, setParticipants] = useState({}); // id -> { name, micOn, sharing }
-  const [remoteStreams, setRemoteStreams] = useState({}); // id -> { audio, video }
-  const [connectionError, setConnectionError] = useState('');
-  const [mediaError, setMediaError] = useState('');
+  const [participants, setParticipants] = useState({});
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [connectionError, setConnectionError] = useState("");
+  const [mediaError, setMediaError] = useState("");
   const [audioBlocked, setAudioBlocked] = useState(false);
-  const audioElsRef = useRef({}); // peerId -> <audio> element, pra destravar depois
 
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
-  const peerConnectionsRef = useRef({}); // id -> RTCPeerConnection
+  const peerConnectionsRef = useRef({});
+  const remoteStreamsRef = useRef({});
 
-  const updateRemoteStream = useCallback((peerId, kind, stream) => {
+  const setRemoteTrack = useCallback((peerId, track) => {
+    let stream = remoteStreamsRef.current[peerId];
+
+    if (!stream) {
+      stream = new MediaStream();
+      remoteStreamsRef.current[peerId] = stream;
+    }
+
+    if (!stream.getTracks().some((t) => t.id === track.id)) {
+      stream.addTrack(track);
+    }
+
     setRemoteStreams((prev) => ({
       ...prev,
-      [peerId]: { ...prev[peerId], [kind]: stream },
+      [peerId]: stream
     }));
   }, []);
 
-  const removeRemoteStream = useCallback((peerId) => {
+  const removeRemotePeer = useCallback((peerId) => {
+    remoteStreamsRef.current[peerId]?.getTracks().forEach((track) => track.stop());
+    delete remoteStreamsRef.current[peerId];
+
     setRemoteStreams((prev) => {
       const next = { ...prev };
       delete next[peerId];
@@ -47,116 +60,121 @@ export default function Room() {
 
   const createPeerConnection = useCallback(
     (peerId) => {
-      const pc = new RTCPeerConnection(ICE_SERVERS);
-      pc._readyForRenegotiation = false;
-      pc._iceQueue = [];
-      pc._isOfferer = false; // marcado true externamente para quem inicia a oferta
+      if (peerConnectionsRef.current[peerId]) {
+        return peerConnectionsRef.current[peerId];
+      }
 
-      // Manda o áudio local (e a tela, se já estiver compartilhando).
+      const socket = socketRef.current;
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+
+      // Perfect Negotiation: um lado é "polite" para evitar colisões
+      // quando os dois lados adicionam/removem tracks ao mesmo tempo.
+      pc.polite = socket ? socket.id > peerId : false;
+      pc.makingOffer = false;
+      pc.ignoreOffer = false;
+
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current);
         });
       }
+
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, screenStreamRef.current);
         });
       }
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socketRef.current?.emit('signal', {
-            to: peerId,
-            data: { type: 'ice', candidate: event.candidate },
-          });
-        }
+      pc.onicecandidate = ({ candidate }) => {
+        if (!candidate) return;
+
+        socketRef.current?.emit("signal", {
+          to: peerId,
+          data: {
+            type: "ice",
+            candidate
+          }
+        });
       };
 
-      pc.ontrack = (event) => {
-        const track = event.track;
-        const stream = new MediaStream([track]);
-        updateRemoteStream(peerId, track.kind, stream);
+      pc.ontrack = ({ track }) => {
+        setRemoteTrack(peerId, track);
+
+        track.onended = () => {
+          const stream = remoteStreamsRef.current[peerId];
+          if (!stream) return;
+
+          stream.removeTrack(track);
+
+          setRemoteStreams((prev) => ({
+            ...prev,
+            [peerId]: stream
+          }));
+        };
       };
 
       pc.onconnectionstatechange = () => {
         setParticipants((prev) => {
           if (!prev[peerId]) return prev;
-          return { ...prev, [peerId]: { ...prev[peerId], connState: pc.connectionState } };
-        });
 
-        // Conexão caiu mas o socket ainda existe: tenta recuperar via ICE
-        // restart antes de desistir. Cobre trocas de rede (Wi-Fi -> 4G) e
-        // falhas de NAT que aparecem só depois de alguns segundos.
-        if (pc.connectionState === 'failed') {
-          restartIce(peerId, pc);
-        }
+          return {
+            ...prev,
+            [peerId]: {
+              ...prev[peerId],
+              connState: pc.connectionState
+            }
+          };
+        });
       };
 
-      // Renegociação (ex: alguém começa a compartilhar tela DEPOIS da
-      // conexão inicial já estabelecida). Ignorado durante o setup inicial,
-      // que é feito manualmente abaixo.
       pc.onnegotiationneeded = async () => {
-        if (!pc._readyForRenegotiation) return;
         try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current?.emit('signal', {
+          pc.makingOffer = true;
+
+          await pc.setLocalDescription();
+
+          socketRef.current?.emit("signal", {
             to: peerId,
-            data: { type: 'offer', sdp: pc.localDescription },
+            data: {
+              type: "offer",
+              sdp: pc.localDescription
+            }
           });
         } catch (err) {
-          console.error('Erro na renegociação:', err);
+          console.error("Falha na negociação WebRTC:", err);
+        } finally {
+          pc.makingOffer = false;
         }
       };
 
       peerConnectionsRef.current[peerId] = pc;
       return pc;
     },
-    [updateRemoteStream]
+    [setRemoteTrack]
   );
 
-  const restartIce = useCallback(async (peerId, pc) => {
-    // Só o lado que originalmente ofertou reinicia, pra não gerar glare
-    // (os dois lados criando oferta ao mesmo tempo pro mesmo restart).
-    if (!pc._readyForRenegotiation || !pc._isOfferer) return;
-    try {
-      const offer = await pc.createOffer({ iceRestart: true });
-      await pc.setLocalDescription(offer);
-      socketRef.current?.emit('signal', {
-        to: peerId,
-        data: { type: 'offer', sdp: pc.localDescription },
-      });
-    } catch (err) {
-      console.error('Erro no ICE restart:', err);
-    }
-  }, []);
+  const closePeer = useCallback(
+    (peerId) => {
+      if (!peerId) return;
 
-  const flushIceQueue = async (pc) => {
-    if (!pc._iceQueue?.length) return;
-    for (const candidate of pc._iceQueue) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error('Erro ao aplicar ICE candidate em fila:', err);
+      const pc = peerConnectionsRef.current[peerId];
+
+      if (pc) {
+        pc.ontrack = null;
+        pc.close();
+        delete peerConnectionsRef.current[peerId];
       }
-    }
-    pc._iceQueue = [];
-  };
 
-  const closePeer = useCallback((peerId) => {
-    const pc = peerConnectionsRef.current[peerId];
-    if (pc) {
-      pc.close();
-      delete peerConnectionsRef.current[peerId];
-    }
-    removeRemoteStream(peerId);
-    setParticipants((prev) => {
-      const next = { ...prev };
-      delete next[peerId];
-      return next;
-    });
-  }, [removeRemoteStream]);
+      removeRemotePeer(peerId);
+
+      setParticipants((prev) => {
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
+    },
+    [removeRemotePeer]
+  );
 
   useEffect(() => {
     if (!joined) return;
@@ -169,123 +187,173 @@ export default function Room() {
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true,
-          },
+            autoGainControl: true
+          }
         });
+
         if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
+          stream.getTracks().forEach((track) => track.stop());
           return;
         }
+
         localStreamRef.current = stream;
       } catch (err) {
+        console.error(err);
         setMediaError(
-          'Não foi possível acessar o microfone. Verifique as permissões do navegador.'
+          "Não foi possível acessar o microfone. Verifique as permissões do navegador."
         );
         return;
       }
 
-      const socket = io(SERVER_URL, { transports: ['websocket', 'polling'] });
+      const socket = io(SERVER_URL, {
+        transports: ["websocket", "polling"],
+        withCredentials: true
+      });
+
       socketRef.current = socket;
 
-      socket.on('connect_error', () => {
-        setConnectionError('Não foi possível conectar ao servidor de sinalização.');
+      socket.on("connect_error", (err) => {
+        console.error("Socket.IO:", err);
+        setConnectionError(
+          "Não foi possível conectar ao servidor de sinalização."
+        );
       });
 
-      socket.on('connect', () => {
-        setConnectionError('');
-        socket.emit('join-room', { roomId, name });
-      });
+      socket.on("connect", () => {
+        setConnectionError("");
 
-      // Nós somos os recém-chegados: iniciamos a oferta para cada peer existente.
-      socket.on('existing-users', (users) => {
-        const initial = {};
-        users.forEach((u) => {
-          initial[u.id] = { name: u.name, micOn: u.micOn, sharing: u.sharing };
-        });
-        setParticipants((prev) => ({ ...prev, ...initial }));
-
-        users.forEach(async (u) => {
-          const pc = createPeerConnection(u.id);
-          pc._isOfferer = true;
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit('signal', {
-              to: u.id,
-              data: { type: 'offer', sdp: pc.localDescription },
-            });
-          } catch (err) {
-            console.error('Erro ao criar oferta:', err);
+        socket.emit("join-room", { roomId, name }, (response) => {
+          if (!response?.ok) {
+            setConnectionError(
+              response?.error || "Não foi possível entrar na sala."
+            );
+            return;
           }
-        });
-      });
 
-      // Alguém novo entrou: só aguardamos a oferta dele.
-      socket.on('user-joined', (user) => {
-        setParticipants((prev) => ({
-          ...prev,
-          [user.id]: { name: user.name, micOn: user.micOn, sharing: user.sharing },
-        }));
-        createPeerConnection(user.id);
-      });
+          const users = response.users || [];
+          const initial = {};
 
-      socket.on('signal', async ({ from, data }) => {
-        let pc = peerConnectionsRef.current[from];
-        if (!pc) {
-          pc = createPeerConnection(from);
-        }
+          users.forEach((user) => {
+            const id = user.id || user.socketId;
+            if (!id) return;
 
-        if (data.type === 'offer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          await flushIceQueue(pc);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          pc._readyForRenegotiation = true;
-          socket.emit('signal', {
-            to: from,
-            data: { type: 'answer', sdp: pc.localDescription },
+            initial[id] = {
+              name: user.name,
+              micOn: user.micOn !== false,
+              sharing: Boolean(user.sharing)
+            };
           });
-        } else if (data.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          await flushIceQueue(pc);
-          pc._readyForRenegotiation = true;
-        } else if (data.type === 'ice') {
-          if (pc.remoteDescription && pc.remoteDescription.type) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-            } catch (err) {
-              console.error('Erro ao adicionar ICE candidate:', err);
-            }
-          } else {
-            pc._iceQueue.push(data.candidate);
+
+          setParticipants(initial);
+
+          users.forEach((user) => {
+            const id = user.id || user.socketId;
+            if (id) createPeerConnection(id);
+          });
+        });
+      });
+
+      socket.on("user-joined", (user) => {
+        const id = user.id || user.socketId;
+        if (!id) return;
+
+        setParticipants((prev) => ({
+          ...prev,
+          [id]: {
+            name: user.name,
+            micOn: user.micOn !== false,
+            sharing: Boolean(user.sharing)
           }
+        }));
+
+        createPeerConnection(id);
+      });
+
+      socket.on("room-users", (users) => {
+        setParticipants((prev) => {
+          const next = { ...prev };
+
+          users.forEach((user) => {
+            const id = user.id || user.socketId;
+            if (!id || id === socket.id) return;
+
+            next[id] = {
+              ...next[id],
+              name: user.name,
+              micOn: user.micOn !== false,
+              sharing: Boolean(user.sharing)
+            };
+          });
+
+          return next;
+        });
+      });
+
+      socket.on("signal", async ({ from, data }) => {
+        if (!from || !data) return;
+
+        const pc = createPeerConnection(from);
+
+        try {
+          if (data.type === "offer") {
+            const offerCollision =
+              pc.makingOffer || pc.signalingState !== "stable";
+
+            pc.ignoreOffer = !pc.polite && offerCollision;
+
+            if (pc.ignoreOffer) return;
+
+            if (offerCollision) {
+              await pc.setLocalDescription({ type: "rollback" });
+            }
+
+            await pc.setRemoteDescription(data.sdp);
+
+            await pc.setLocalDescription(await pc.createAnswer());
+
+            socket.emit("signal", {
+              to: from,
+              data: {
+                type: "answer",
+                sdp: pc.localDescription
+              }
+            });
+          } else if (data.type === "answer") {
+            await pc.setRemoteDescription(data.sdp);
+          } else if (data.type === "ice") {
+            try {
+              await pc.addIceCandidate(data.candidate);
+            } catch (err) {
+              if (!pc.ignoreOffer) throw err;
+            }
+          }
+        } catch (err) {
+          console.error("Erro na sinalização WebRTC:", err);
         }
       });
 
-      socket.on('mic-toggled', ({ id, micOn: remoteMicOn }) => {
+      socket.on("mic-toggled", ({ id, micOn: remoteMicOn }) => {
         setParticipants((prev) => ({
           ...prev,
-          [id]: { ...prev[id], micOn: remoteMicOn },
+          [id]: {
+            ...prev[id],
+            micOn: Boolean(remoteMicOn)
+          }
         }));
       });
 
-      socket.on('screen-share-started', ({ id }) => {
+      socket.on("screen-state", ({ id, sharing: remoteSharing }) => {
         setParticipants((prev) => ({
           ...prev,
-          [id]: { ...prev[id], sharing: true },
+          [id]: {
+            ...prev[id],
+            sharing: Boolean(remoteSharing)
+          }
         }));
       });
 
-      socket.on('screen-share-stopped', ({ id }) => {
-        setParticipants((prev) => ({
-          ...prev,
-          [id]: { ...prev[id], sharing: false },
-        }));
-        updateRemoteStream(id, 'video', null);
-      });
-
-      socket.on('user-left', ({ id }) => {
-        closePeer(id);
+      socket.on("user-left", ({ id, socketId }) => {
+        closePeer(id || socketId);
       });
     }
 
@@ -293,104 +361,148 @@ export default function Room() {
 
     return () => {
       cancelled = true;
-      socketRef.current?.emit('leave-room');
+
+      socketRef.current?.emit("leave-room");
       socketRef.current?.disconnect();
+      socketRef.current = null;
+
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
       peerConnectionsRef.current = {};
-      localStreamRef.current?.getTracks().forEach((t) => t.stop());
-      screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+
+      Object.values(remoteStreamsRef.current).forEach((stream) => {
+        stream.getTracks().forEach((track) => track.stop());
+      });
+      remoteStreamsRef.current = {};
+
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+
+      localStreamRef.current = null;
+      screenStreamRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joined, roomId, name]);
+  }, [joined, roomId, name, createPeerConnection, closePeer]);
 
   function handleJoinSubmit(e) {
     e.preventDefault();
-    if (!nameInput.trim()) return;
-    setName(nameInput.trim());
+
+    const cleanName = nameInput.trim();
+    if (!cleanName) return;
+
+    setName(cleanName);
     setJoined(true);
   }
 
   function toggleMic() {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (!track) return;
+
     track.enabled = !track.enabled;
     setMicOn(track.enabled);
-    socketRef.current?.emit('toggle-mic', { micOn: track.enabled });
+
+    socketRef.current?.emit("toggle-mic", {
+      micOn: track.enabled
+    });
   }
 
   async function startScreenShare() {
-  try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: true,
-    });
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: {
+            ideal: 30,
+            max: 60
+          }
+        },
+        audio: true
+      });
 
-    screenStreamRef.current = stream;
+      screenStreamRef.current = stream;
 
-    const videoTrack = stream.getVideoTracks()[0];
+      const videoTrack = stream.getVideoTracks()[0];
 
-    videoTrack.onended = () => {
-      stopScreenShare();
-    };
+      if (videoTrack) {
+        videoTrack.onended = () => stopScreenShare();
+      }
 
-    // Envia vídeo E áudio da transmissão para todos os peers
-    stream.getTracks().forEach((track) => {
       Object.values(peerConnectionsRef.current).forEach((pc) => {
-        pc.addTrack(track, stream);
+        stream.getTracks().forEach((track) => {
+          pc.addTrack(track, stream);
+        });
+      });
+
+      // A renegociação será disparada automaticamente pelo WebRTC.
+      socketRef.current?.emit("screen-state", {
+        sharing: true
+      });
+
+      setSharing(true);
+    } catch (err) {
+      console.warn("Compartilhamento de tela cancelado:", err);
+    }
+  }
+
+  function stopScreenShare() {
+    const stream = screenStreamRef.current;
+    if (!stream) return;
+
+    const tracks = new Set(stream.getTracks());
+
+    Object.values(peerConnectionsRef.current).forEach((pc) => {
+      pc.getSenders().forEach((sender) => {
+        if (sender.track && tracks.has(sender.track)) {
+          try {
+            pc.removeTrack(sender);
+          } catch {
+            // conexão já encerrada
+          }
+        }
       });
     });
 
-    socketRef.current?.emit('screen-share-started');
-    setSharing(true);
-  } catch (err) {
-    console.warn('Compartilhamento de tela cancelado:', err);
-  }
-}
+    stream.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
 
-  function stopScreenShare() {
-  const stream = screenStreamRef.current;
-  if (!stream) return;
-
-  const tracks = stream.getTracks();
-
-  Object.values(peerConnectionsRef.current).forEach((pc) => {
-    pc.getSenders().forEach((sender) => {
-      if (sender.track && tracks.includes(sender.track)) {
-        pc.removeTrack(sender);
-      }
+    socketRef.current?.emit("screen-state", {
+      sharing: false
     });
-  });
 
-  tracks.forEach((track) => track.stop());
+    setSharing(false);
+  }
 
-  screenStreamRef.current = null;
-
-  socketRef.current?.emit('screen-share-stopped');
-  setSharing(false);
-}
+  function toggleScreenShare() {
+    if (sharing) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
+    }
+  }
 
   async function copyInvite() {
     const link = `${window.location.origin}/room/${roomId}`;
+
     try {
       await navigator.clipboard.writeText(link);
-      alert('Link copiado: ' + link);
+      alert("Link copiado: " + link);
     } catch {
-      prompt('Copie o link da sala:', link);
+      prompt("Copie o link da sala:", link);
     }
   }
 
   function leaveRoom() {
-    navigate('/');
+    socketRef.current?.emit("leave-room");
+    navigate("/");
   }
 
-  function unlockAudio() {
-    Object.values(audioElsRef.current).forEach((el) => {
-      el.play().catch(() => {});
-    });
+  async function unlockAudio() {
+    const elements = document.querySelectorAll("audio, video");
+
+    await Promise.all(
+      [...elements].map((element) => element.play().catch(() => {}))
+    );
+
     setAudioBlocked(false);
   }
 
-  // --- Tela de entrada (quando alguém abre o link direto, sem passar pela Home) ---
   if (!joined) {
     return (
       <div className="home">
@@ -399,8 +511,10 @@ export default function Room() {
           <p className="subtitle">
             Sala: <strong>{roomId}</strong>
           </p>
+
           <form onSubmit={handleJoinSubmit}>
             <label htmlFor="name2">Nome</label>
+
             <input
               id="name2"
               value={nameInput}
@@ -408,6 +522,7 @@ export default function Room() {
               placeholder="Digite seu nome"
               autoFocus
             />
+
             <button className="btn primary" type="submit">
               Entrar
             </button>
@@ -423,7 +538,8 @@ export default function Room() {
         <div className="home-card">
           <h1>Ops</h1>
           <p className="error">{mediaError}</p>
-          <button className="btn secondary" onClick={() => navigate('/')}>
+
+          <button className="btn secondary" onClick={() => navigate("/")}>
             Voltar
           </button>
         </div>
@@ -431,14 +547,22 @@ export default function Room() {
     );
   }
 
-  const sharingPeerId = Object.entries(participants).find(([, p]) => p.sharing)?.[0];
-  const remoteSharingStream = sharingPeerId ? remoteStreams[sharingPeerId]?.video : null;
+  const sharingPeerId = Object.entries(participants).find(
+    ([, participant]) => participant.sharing
+  )?.[0];
+
+  const remoteSharingStream = sharingPeerId
+    ? remoteStreams[sharingPeerId]
+    : null;
 
   return (
     <div className="room">
       <header className="room-header">
         <span>SALA: {roomId}</span>
-        {connectionError && <span className="error">{connectionError}</span>}
+
+        {connectionError && (
+          <span className="error">{connectionError}</span>
+        )}
       </header>
 
       {audioBlocked && (
@@ -454,70 +578,90 @@ export default function Room() {
             autoPlay
             playsInline
             muted
-            ref={(el) => {
-              if (el && screenStreamRef.current) el.srcObject = screenStreamRef.current;
+            ref={(element) => {
+              if (element && screenStreamRef.current) {
+                element.srcObject = screenStreamRef.current;
+              }
             }}
           />
-        ) : remoteSharingStream ? (
+        ) : remoteSharingStream?.getVideoTracks().length ? (
           <video
             className="screen-video"
             autoPlay
             playsInline
-            ref={(el) => {
-              if (el) el.srcObject = remoteSharingStream;
+            ref={(element) => {
+              if (!element) return;
+
+              element.srcObject = remoteSharingStream;
+
+              element.play().catch(() => {
+                setAudioBlocked(true);
+              });
             }}
           />
         ) : (
-          <p className="no-share">Ninguém está compartilhando a tela.</p>
+          <p className="no-share">
+            Ninguém está compartilhando a tela.
+          </p>
         )}
       </div>
 
+      {!sharing &&
+        Object.entries(remoteStreams).map(([peerId, stream]) => {
+          if (participants[peerId]?.sharing) return null;
+          if (!stream.getAudioTracks().length) return null;
+
+          return (
+            <audio
+              key={peerId}
+              autoPlay
+              playsInline
+              ref={(element) => {
+                if (!element) return;
+
+                element.srcObject = stream;
+
+                element.play().catch(() => {
+                  setAudioBlocked(true);
+                });
+              }}
+            />
+          );
+        })}
+
       <div className="participants">
         <div className="participant">
-          <span>👤 {name} (você)</span>
-          <span>{micOn ? '🎤' : '🔇'}</span>
+          👤 {name} ({micOn ? "voz" : "mudo"})
         </div>
-        {Object.entries(participants).map(([id, p]) => (
+
+        {Object.entries(participants).map(([id, participant]) => (
           <div className="participant" key={id}>
-            <span>
-              {p.connState === 'connecting' || p.connState === 'new' ? '🟡' : ''}
-              {p.connState === 'connected' ? '🟢' : ''}
-              {p.connState === 'failed' || p.connState === 'disconnected' ? '🔴' : ''}
-              {' '}
-              👤 {p.name}
-            </span>
-            <span>{p.micOn ? '🎤' : '🔇'}</span>
-            {remoteStreams[id]?.audio && (
-              <audio
-                autoPlay
-                playsInline
-                ref={(el) => {
-                  if (!el) return;
-                  audioElsRef.current[id] = el;
-                  if (el.srcObject !== remoteStreams[id].audio) {
-                    el.srcObject = remoteStreams[id].audio;
-                  }
-                  const playPromise = el.play();
-                  if (playPromise) {
-                    playPromise.catch(() => setAudioBlocked(true));
-                  }
-                }}
-              />
-            )}
+            👤 {participant.name || "Convidado"}{" "}
+            {participant.micOn === false ? "🔇" : "🎙️"}
+            {participant.sharing ? " 🖥️" : ""}
           </div>
         ))}
       </div>
 
       <div className="controls">
-        <button className={`btn ${micOn ? 'secondary' : 'danger'}`} onClick={toggleMic}>
-          {micOn ? '🎤 Microfone' : '🔇 Microfone'}
+        <button className="btn secondary" onClick={toggleMic}>
+          🎤 {micOn ? "Microfone" : "Ativar microfone"}
         </button>
-        <button className={`btn ${sharing ? 'danger' : 'secondary'}`} onClick={toggleScreenShare}>
-          {sharing ? '🖥 Parar compartilhamento' : '🖥 Compartilhar tela'}
+
+        <button
+          className="btn secondary"
+          onClick={toggleScreenShare}
+        >
+          🖥️{" "}
+          {sharing
+            ? "Parar de compartilhar"
+            : "Compartilhar tela"}
         </button>
+
         <button className="btn secondary" onClick={copyInvite}>
           🔗 Copiar convite
         </button>
+
         <button className="btn danger" onClick={leaveRoom}>
           🚪 Sair
         </button>
