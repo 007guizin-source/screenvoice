@@ -28,7 +28,7 @@ let localStream = null;
 let screenStream = null;
 let micEnabled = true;
 const remoteAudioElements = new Map();
-const remoteAudioMixers = new Map();
+const remoteTrackAudios = new Map();
 const peers = new Map();
 const remoteStreams = new Map();
 
@@ -457,38 +457,27 @@ function escapeHtml(value) {
 
 async function unlockRemoteAudio() {
   audioUnlocked = true;
-  let resumed = 0;
+  let played = 0;
 
-  for (const mixer of remoteAudioMixers.values()) {
-    try {
-      await mixer.context.resume();
-      resumed++;
-    } catch (error) {
-      console.warn("Áudio remoto ainda bloqueado:", error);
-    }
-  }
-
-  const audios = [...document.querySelectorAll(".remote-screen-audio")];
-  for (const audio of audios) {
-    try {
-      audio.muted = false;
-      audio.volume = 1;
-      if (audio.srcObject) await audio.play();
-    } catch (error) {
-      console.warn("Fallback de áudio remoto:", error);
+  for (const trackMap of remoteTrackAudios.values()) {
+    for (const item of trackMap.values()) {
+      try {
+        item.audio.muted = false;
+        await item.audio.play();
+        played++;
+      } catch (error) {
+        console.warn("Áudio remoto ainda bloqueado:", error);
+      }
     }
   }
 
   if (audioBtn) {
-    audioBtn.textContent = (resumed || audios.length) ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
-    audioBtn.classList.toggle("active", resumed > 0 || audioUnlocked);
+    audioBtn.textContent = played ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
+    audioBtn.classList.toggle("active", played > 0);
   }
 
-  if (resumed > 0 || audios.some(audio => audio.srcObject)) {
-    showToast("Áudio ativado. Voz priorizada sobre o áudio da transmissão.");
-  } else {
-    showToast("Toque novamente no botão para liberar o áudio.");
-  }
+  if (played) showToast("Áudio ativado.");
+  else showToast("Toque novamente em Ativar áudio para liberar o som.");
 }
 
 async function requestFullscreenVideo(video) {
@@ -628,100 +617,73 @@ async function stopScreen() {
   await updateOutgoingAudio();
 };
 
-function getAudioContextClass() {
-  return window.AudioContext || window.webkitAudioContext;
-}
-
-function ensureRemoteAudioMixer(id) {
-  let mixer = remoteAudioMixers.get(id);
-  if (mixer) return mixer;
-
-  const AudioContextClass = getAudioContextClass();
-  if (!AudioContextClass) return null;
-
-  const context = new AudioContextClass();
-  const destination = context.createMediaStreamDestination();
-  const micGain = context.createGain();
-  const screenGain = context.createGain();
-
-  // Voz em volume normal; áudio compartilhado reduzido para não cobrir a fala.
-  micGain.gain.value = 1.0;
-  screenGain.gain.value = 0.45;
-
-  micGain.connect(destination);
-  screenGain.connect(destination);
-
-  mixer = {
-    context,
-    destination,
-    micGain,
-    screenGain,
-    sources: new Map()
-  };
-  remoteAudioMixers.set(id, mixer);
-
-  const audio = remoteAudioElements.get(id);
-  if (audio) {
-    audio.srcObject = destination.stream;
-    audio.muted = false;
-    audio.volume = 1;
-    if (audioUnlocked) audio.play().catch(() => {});
-  }
-
-  return mixer;
+function getRemoteAudioType(peer, transceiver, existingTypes) {
+  const mid = transceiver?.mid;
+  if (mid && peer?.screenAudioTransceiver?.mid === mid) return "screen";
+  if (mid && peer?.micTransceiver?.mid === mid) return "mic";
+  return existingTypes.includes("mic") ? "screen" : "mic";
 }
 
 function setupRemoteAudioTrack(id, peer, track, transceiver) {
-  const mixer = ensureRemoteAudioMixer(id);
-  if (!mixer) return;
+  if (track.kind !== "audio") return;
 
-  const mid = transceiver?.mid;
-  let type = "mic";
-
-  if (mid && peer.screenAudioTransceiver?.mid === mid) {
-    type = "screen";
-  } else if (mid && peer.micTransceiver?.mid === mid) {
-    type = "mic";
-  } else {
-    // Fallback para navegadores que não expõem o MID no evento ontrack.
-    const existingTypes = [...mixer.sources.values()].map(source => source.type);
-    type = existingTypes.includes("mic") ? "screen" : "mic";
+  let trackMap = remoteTrackAudios.get(id);
+  if (!trackMap) {
+    trackMap = new Map();
+    remoteTrackAudios.set(id, trackMap);
   }
+  if (trackMap.has(track.id)) return;
 
-  const previous = mixer.sources.get(track.id);
-  if (previous) return;
+  const type = getRemoteAudioType(peer, transceiver, [...trackMap.values()].map(x => x.type));
+  const audio = document.createElement("audio");
+  audio.autoplay = true;
+  audio.controls = false;
+  audio.muted = false;
+  audio.playsInline = true;
+  audio.setAttribute("playsinline", "");
+  audio.className = "remote-track-audio";
+  audio.volume = type === "screen" ? 0.45 : 1.0;
+  audio.srcObject = new MediaStream([track]);
+  audio.style.position = "fixed";
+  audio.style.width = "1px";
+  audio.style.height = "1px";
+  audio.style.opacity = "0";
+  audio.style.pointerEvents = "none";
 
-  const source = mixer.context.createMediaStreamSource(new MediaStream([track]));
-  const gain = type === "screen" ? mixer.screenGain : mixer.micGain;
-  source.connect(gain);
-  mixer.sources.set(track.id, { source, type, gain });
+  document.body.appendChild(audio);
+  trackMap.set(track.id, { audio, type });
 
   if (audioUnlocked) {
-    mixer.context.resume().catch(() => {});
+    audio.play().catch(error => console.warn("Reprodução de faixa remota:", error));
   }
 }
 
 function removeRemoteAudioTrack(id, trackId) {
-  const mixer = remoteAudioMixers.get(id);
-  if (!mixer) return;
-
-  const item = mixer.sources.get(trackId);
+  const trackMap = remoteTrackAudios.get(id);
+  if (!trackMap) return;
+  const item = trackMap.get(trackId);
   if (!item) return;
 
-  try { item.source.disconnect(); } catch {}
-  mixer.sources.delete(trackId);
+  try {
+    item.audio.pause();
+    item.audio.srcObject = null;
+    item.audio.remove();
+  } catch {}
+  trackMap.delete(trackId);
+  if (!trackMap.size) remoteTrackAudios.delete(id);
 }
 
 function destroyRemoteAudioMixer(id) {
-  const mixer = remoteAudioMixers.get(id);
-  if (!mixer) return;
-
-  for (const item of mixer.sources.values()) {
-    try { item.source.disconnect(); } catch {}
+  const trackMap = remoteTrackAudios.get(id);
+  if (!trackMap) return;
+  for (const item of trackMap.values()) {
+    try {
+      item.audio.pause();
+      item.audio.srcObject = null;
+      item.audio.remove();
+    } catch {}
   }
-  mixer.sources.clear();
-  mixer.context.close().catch(() => {});
-  remoteAudioMixers.delete(id);
+  remoteTrackAudios.delete(id);
 }
 
 function renderRemoteStream(id, stream, name) {
@@ -751,7 +713,7 @@ function renderRemoteStream(id, stream, name) {
     soundButton.className = "video-action";
     soundButton.type = "button";
     soundButton.textContent = "🔊 Ativar áudio";
-    soundButton.onclick = async (event) => {
+    soundButton.onclick = async event => {
       event.stopPropagation();
       await unlockRemoteAudio();
     };
@@ -760,7 +722,7 @@ function renderRemoteStream(id, stream, name) {
     fullscreenButton.className = "video-action";
     fullscreenButton.type = "button";
     fullscreenButton.textContent = "⛶ Tela cheia";
-    fullscreenButton.onclick = (event) => {
+    fullscreenButton.onclick = event => {
       event.stopPropagation();
       requestFullscreenVideo(video);
     };
@@ -775,7 +737,7 @@ function renderRemoteStream(id, stream, name) {
     const audio = document.createElement("audio");
     audio.autoplay = false;
     audio.controls = false;
-    audio.muted = false;
+    audio.muted = true;
     audio.volume = 1;
     audio.className = "remote-screen-audio";
     audio.id = `audio-${id}`;
@@ -797,18 +759,9 @@ function renderRemoteStream(id, stream, name) {
   } else {
     video.srcObject = null;
   }
-
-  // O áudio remoto é mixado separadamente: voz em 100% e áudio da
-  // transmissão em 45%. Assim o áudio compartilhado não cobre a fala.
-  const audio = remoteAudioElements.get(id);
-  if (audio && audioUnlocked) {
-    audio.muted = false;
-    audio.volume = 1;
-    audio.play().catch(error => console.warn("Reprodução de áudio remoto:", error));
-  }
-
   updateEmptyStage();
 }
+
 screensEl.addEventListener("click", () => {
   // A tap inside the transmission is also a valid user gesture on mobile.
   if (!audioUnlocked) unlockRemoteAudio();
