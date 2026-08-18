@@ -3,7 +3,7 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { ICE_SERVERS } from './webrtc.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
 
 export default function Room() {
   const { roomId } = useParams();
