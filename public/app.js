@@ -1,4 +1,4 @@
-const socket = io();
+﻿const socket = io();
 
 const home = document.getElementById("home");
 const roomEl = document.getElementById("room");
@@ -74,7 +74,7 @@ joinBtn.onclick = () => {
   const name = getName();
   const code = roomCodeInput.value.trim().toUpperCase();
   if (!name) return;
-  if (!code) return setError("Digite o código da sala.");
+  if (!code) return setError("Digite o cÃ³digo da sala.");
   history.pushState({}, "", `/room/${code}`);
   join(code, name);
 };
@@ -107,8 +107,8 @@ async function join(roomId, name) {
 
   socket.emit("join-room", { roomId, name }, async result => {
     if (!result?.ok) {
-      setError(result?.error || "Não foi possível entrar.");
-      statusEl.textContent = "Não conectado";
+      setError(result?.error || "NÃ£o foi possÃ­vel entrar.");
+      statusEl.textContent = "NÃ£o conectado";
       return;
     }
 
@@ -124,14 +124,14 @@ async function join(roomId, name) {
       await startMicrophone();
       micEnabled = true;
       updateMicButton();
-      statusEl.textContent = "Conectado — microfone ativo";
+      statusEl.textContent = "Conectado â€” microfone ativo";
     } catch (error) {
-      statusEl.textContent = "Conectado — microfone bloqueado";
+      statusEl.textContent = "Conectado â€” microfone bloqueado";
       handleMicError(error);
     }
 
-    // Somente os usuários que já estavam na sala iniciam a negociação.
-    // O usuário novo apenas espera os offers, evitando colisões WebRTC.
+    // Somente os usuÃ¡rios que jÃ¡ estavam na sala iniciam a negociaÃ§Ã£o.
+    // O usuÃ¡rio novo apenas espera os offers, evitando colisÃµes WebRTC.
     for (const user of result.users) {
       createPeer(user.socketId, user.name, false);
     }
@@ -142,7 +142,7 @@ async function startMicrophone() {
   if (localStream) return localStream;
 
   if (!navigator.mediaDevices?.getUserMedia) {
-    const error = new Error("getUserMedia não está disponível neste navegador/contexto.");
+    const error = new Error("getUserMedia nÃ£o estÃ¡ disponÃ­vel neste navegador/contexto.");
     error.name = "NotSupportedError";
     throw error;
   }
@@ -195,7 +195,7 @@ function updateOutgoingAudio() {
     if (peer.screenAudioSender) {
       const screenTrack = screenStream?.getAudioTracks()[0] || null;
       peer.screenAudioSender.replaceTrack(screenTrack).catch(error =>
-        console.warn("Faixa de áudio da tela:", error)
+        console.warn("Faixa de Ã¡udio da tela:", error)
       );
     }
   }
@@ -223,8 +223,8 @@ function createPeer(remoteId, remoteName, initiator) {
   };
   peers.set(remoteId, peer);
 
-  // Reserve uma faixa de vídeo desde o início. Assim, compartilhar/parar a tela
-  // usa replaceTrack() e não precisa de uma nova negociação.
+  // Reserve uma faixa de vÃ­deo desde o inÃ­cio. Assim, compartilhar/parar a tela
+  // usa replaceTrack() e nÃ£o precisa de uma nova negociaÃ§Ã£o.
   const videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
   peer.videoSender = videoTransceiver.sender;
 
@@ -236,7 +236,7 @@ function createPeer(remoteId, remoteName, initiator) {
   peer.screenAudioTransceiver = screenAudioTransceiver;
   peer.screenAudioSender = screenAudioTransceiver.sender;
 
-  // Prioriza Opus, que é o codec de áudio de maior qualidade/eficiência
+  // Prioriza Opus, que Ã© o codec de Ã¡udio de maior qualidade/eficiÃªncia
   // suportado pelos navegadores modernos. Evita que o navegador escolha
   // codecs de telefonia de baixa qualidade quando houver alternativa.
   try {
@@ -252,7 +252,7 @@ function createPeer(remoteId, remoteName, initiator) {
       screenAudioTransceiver.setCodecPreferences?.([...opus, ...others]);
     }
   } catch (error) {
-    console.warn("Não foi possível priorizar Opus:", error);
+    console.warn("NÃ£o foi possÃ­vel priorizar Opus:", error);
   }
 
   // Give the microphone enough Opus bitrate for clear speech and avoid
@@ -264,7 +264,7 @@ function createPeer(remoteId, remoteName, initiator) {
     params.encodings[0].networkPriority = "high";
     awaitSafeSetSenderParameters(micTransceiver.sender, params);
   } catch (error) {
-    console.warn("Não foi possível ajustar a qualidade do microfone:", error);
+    console.warn("NÃ£o foi possÃ­vel ajustar a qualidade do microfone:", error);
   }
 
   updateOutgoingAudio();
@@ -348,7 +348,7 @@ async function makeOffer(remoteId) {
 
 socket.on("user-joined", ({ socketId, name }) => {
   renderPeople();
-  // Quem já estava na sala inicia a conexão com quem acabou de entrar.
+  // Quem jÃ¡ estava na sala inicia a conexÃ£o com quem acabou de entrar.
   createPeer(socketId, name, true);
 });
 
@@ -399,7 +399,7 @@ async function flushPendingIce(peer) {
     try {
       await peer.pc.addIceCandidate(candidate);
     } catch (error) {
-      console.warn("Não foi possível adicionar ICE:", error);
+      console.warn("NÃ£o foi possÃ­vel adicionar ICE:", error);
     }
   }
 }
@@ -415,7 +415,7 @@ socket.on("room-users", users => {
 
 socket.on("screen-state", ({ socketId, name, sharing }) => {
   if (sharing) {
-    showToast(`${name || "Alguém"} começou a compartilhar a tela.`);
+    showToast(`${name || "AlguÃ©m"} comeÃ§ou a compartilhar a tela.`);
   }
 });
 
@@ -443,7 +443,7 @@ function renderPeople(users) {
   peopleEl.innerHTML = unique.map(user => `
     <div class="person">
       <span class="dot"></span>
-      <span class="person-name">${escapeHtml(user.name)}${user.socketId === socket.id ? " (você)" : ""}</span>
+      <span class="person-name">${escapeHtml(user.name)}${user.socketId === socket.id ? " (vocÃª)" : ""}</span>
     </div>
   `).join("");
   countEl.textContent = unique.length;
@@ -459,25 +459,50 @@ async function unlockRemoteAudio() {
   audioUnlocked = true;
   let played = 0;
 
+  const audios = document.querySelectorAll('audio.remote-screen-audio, audio.remote-screen-audio, audio');
+
+  for (const audio of audios) {
+    try {
+      audio.autoplay = true;
+      audio.muted = false;
+      audio.volume = 0.75;
+      await audio.play();
+      played++;
+    } catch (error) {
+      console.warn("Áudio remoto ainda bloqueado:", error);
+    }
+  }
+
   for (const trackMap of remoteTrackAudios.values()) {
     for (const item of trackMap.values()) {
       try {
+        if (!item.audio) continue;
+
+        item.audio.autoplay = true;
         item.audio.muted = false;
+        item.audio.volume = 0.75;
+
         await item.audio.play();
         played++;
       } catch (error) {
-        console.warn("Áudio remoto ainda bloqueado:", error);
+        console.warn("Não foi possível reproduzir áudio remoto:", error);
       }
     }
   }
 
   if (audioBtn) {
-    audioBtn.textContent = played ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
-    audioBtn.classList.toggle("active", played > 0);
+    const active = played > 0;
+    audioBtn.textContent = active ? "🔊 Áudio ativado" : "🔊 Ativar áudio";
+    audioBtn.classList.toggle("active", active);
   }
 
-  if (played) showToast("Áudio ativado.");
-  else showToast("Toque novamente em Ativar áudio para liberar o som.");
+  if (played > 0) {
+    showToast("Áudio ativado.");
+  } else {
+    showToast("Nenhum áudio disponível ainda. Tente novamente quando a outra pessoa falar.");
+  }
+
+  return played > 0;
 }
 
 async function requestFullscreenVideo(video) {
@@ -498,10 +523,10 @@ async function requestFullscreenVideo(video) {
       return;
     }
 
-    showToast("Tela cheia não é suportada por este navegador.");
+    showToast("Tela cheia nÃ£o Ã© suportada por este navegador.");
   } catch (error) {
     console.warn("Tela cheia:", error);
-    showToast("Toque novamente no botão de tela cheia.");
+    showToast("Toque novamente no botÃ£o de tela cheia.");
   }
 }
 
@@ -521,17 +546,17 @@ async function toggleMic() {
 function handleMicError(error) {
   console.error("Microfone:", error);
   if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
-    showToast("Permissão do microfone bloqueada. Clique no cadeado da barra de endereço e permita o microfone.");
+    showToast("PermissÃ£o do microfone bloqueada. Clique no cadeado da barra de endereÃ§o e permita o microfone.");
   } else if (error?.name === "NotFoundError") {
     showToast("Nenhum microfone foi encontrado neste dispositivo.");
   } else {
-    showToast("Não foi possível acessar o microfone.");
+    showToast("NÃ£o foi possÃ­vel acessar o microfone.");
   }
   updateMicButton();
 }
 
 function updateMicButton() {
-  micBtn.innerHTML = micEnabled ? "🎤 <span>Microfone ligado</span>" : "🔇 <span>Microfone desligado</span>";
+  micBtn.innerHTML = micEnabled ? "ðŸŽ¤ <span>Microfone ligado</span>" : "ðŸ”‡ <span>Microfone desligado</span>";
   micBtn.classList.toggle("active", micEnabled);
 }
 
@@ -544,15 +569,15 @@ screenBtn.onclick = async () => {
   }
 
   if (!navigator.mediaDevices?.getDisplayMedia) {
-    showToast("Seu navegador não permite compartilhamento de tela neste contexto.");
+    showToast("Seu navegador nÃ£o permite compartilhamento de tela neste contexto.");
     return;
   }
 
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { cursor: "motion", frameRate: { ideal: 30, max: 60 } },
-      // Pede áudio de alta fidelidade. O navegador pode ignorar parte dessas
-      // opções, mas quando suportadas elas evitam processamento desnecessário.
+      // Pede Ã¡udio de alta fidelidade. O navegador pode ignorar parte dessas
+      // opÃ§Ãµes, mas quando suportadas elas evitam processamento desnecessÃ¡rio.
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
@@ -564,18 +589,18 @@ screenBtn.onclick = async () => {
     });
 
     const track = screenStream.getVideoTracks()[0];
-    if (!track) throw new Error("Nenhuma faixa de vídeo foi disponibilizada.");
+    if (!track) throw new Error("Nenhuma faixa de vÃ­deo foi disponibilizada.");
 
     const audioTracks = screenStream.getAudioTracks();
     if (audioTracks.length) {
-      showToast("Áudio da tela capturado.");
+      showToast("Ãudio da tela capturado.");
     } else {
-      showToast("Tela sem áudio. No Chrome, selecione uma aba e marque 'Compartilhar áudio' ou 'Compartilhar áudio do sistema'.");
+      showToast("Tela sem Ã¡udio. No Chrome, selecione uma aba e marque 'Compartilhar Ã¡udio' ou 'Compartilhar Ã¡udio do sistema'.");
     }
 
     updateOutgoingAudio();
 
-    screenBtn.innerHTML = "⏹️ <span>Parar compartilhamento</span>";
+    screenBtn.innerHTML = "â¹ï¸ <span>Parar compartilhamento</span>";
     screenBtn.classList.add("active");
     socket.emit("screen-state", { sharing: true });
 
@@ -591,9 +616,9 @@ screenBtn.onclick = async () => {
     screenStream = null;
 
     if (error?.name === "NotAllowedError" || error?.name === "AbortError") {
-      showToast("Compartilhamento cancelado ou não autorizado.");
+      showToast("Compartilhamento cancelado ou nÃ£o autorizado.");
     } else {
-      showToast("Não foi possível iniciar o compartilhamento de tela.");
+      showToast("NÃ£o foi possÃ­vel iniciar o compartilhamento de tela.");
     }
   }
 };
@@ -605,7 +630,7 @@ async function stopScreen() {
   screenStream = null;
   oldStream.getTracks().forEach(track => track.stop());
 
-  screenBtn.innerHTML = "🖥️ <span>Compartilhar tela</span>";
+  screenBtn.innerHTML = "ðŸ–¥ï¸ <span>Compartilhar tela</span>";
   screenBtn.classList.remove("active");
   socket.emit("screen-state", { sharing: false });
 
@@ -654,7 +679,7 @@ function setupRemoteAudioTrack(id, peer, track, transceiver) {
   trackMap.set(track.id, { audio, type });
 
   if (audioUnlocked) {
-    audio.play().catch(error => console.warn("Reprodução de faixa remota:", error));
+    audio.play().catch(error => console.warn("ReproduÃ§Ã£o de faixa remota:", error));
   }
 }
 
@@ -712,7 +737,7 @@ function renderRemoteStream(id, stream, name) {
     const soundButton = document.createElement("button");
     soundButton.className = "video-action";
     soundButton.type = "button";
-    soundButton.textContent = "🔊 Ativar áudio";
+    soundButton.textContent = "ðŸ”Š Ativar Ã¡udio";
     soundButton.onclick = async event => {
       event.stopPropagation();
       await unlockRemoteAudio();
@@ -721,7 +746,7 @@ function renderRemoteStream(id, stream, name) {
     const fullscreenButton = document.createElement("button");
     fullscreenButton.className = "video-action";
     fullscreenButton.type = "button";
-    fullscreenButton.textContent = "⛶ Tela cheia";
+    fullscreenButton.textContent = "â›¶ Tela cheia";
     fullscreenButton.onclick = event => {
       event.stopPropagation();
       requestFullscreenVideo(video);
@@ -793,3 +818,4 @@ leaveBtn.onclick = async () => {
 window.addEventListener("beforeunload", () => {
   socket.emit("leave-room");
 });
+
