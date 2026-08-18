@@ -419,7 +419,7 @@ socket.on("screen-state", ({ socketId, name, sharing }) => {
   }
 });
 
-function updateEmptyStage() { try { updateScreenStage(); } catch (_) {} }`r`n`r`nfunction removePeer(id) {
+function removePeer(id) {
   const peer = peers.get(id);
   if (peer) {
     peer.pc.close();
@@ -818,6 +818,5 @@ leaveBtn.onclick = async () => {
 window.addEventListener("beforeunload", () => {
   socket.emit("leave-room");
 });
-
 
 
