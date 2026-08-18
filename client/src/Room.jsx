@@ -1,3 +1,4 @@
+import './Room-volume.css';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
@@ -28,6 +29,11 @@ export default function Room() {
   const screenStreamRef = useRef(null);
   const peerConnectionsRef = useRef({});
   const remoteStreamsRef = useRef({});
+  const remoteAudioElementsRef = useRef({});
+  const remoteAudioContextsRef = useRef({});
+  const remoteGainNodesRef = useRef({});
+  const [remoteVolumes, setRemoteVolumes] = useState({});
+
   const remoteVideoRef = useRef(null);
   const localVideoRef = useRef(null);
 
@@ -195,6 +201,23 @@ export default function Room() {
       removeRemotePeer(peerId);
 
       setParticipants((prev) => {
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
+
+      delete remoteAudioElementsRef.current[peerId];
+
+      remoteGainNodesRef.current[peerId]?.disconnect();
+      delete remoteGainNodesRef.current[peerId];
+
+      const audioContext = remoteAudioContextsRef.current[peerId];
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+        delete remoteAudioContextsRef.current[peerId];
+      }
+
+      setRemoteVolumes((prev) => {
         const next = { ...prev };
         delete next[peerId];
         return next;
@@ -565,6 +588,26 @@ export default function Room() {
     navigate("/");
   }
 
+  function setRemoteVolume(peerId, value) {
+    const volume = Math.max(0, Math.min(2, Number(value)));
+
+    setRemoteVolumes((prev) => ({
+      ...prev,
+      [peerId]: volume
+    }));
+
+    const gain = remoteGainNodesRef.current[peerId];
+    if (gain) {
+      gain.gain.value = volume;
+      return;
+    }
+
+    const audio = remoteAudioElementsRef.current[peerId];
+    if (audio) {
+      audio.volume = Math.min(1, volume);
+    }
+  }
+
   async function unlockAudio() {
     const elements = document.querySelectorAll("audio, video");
 
@@ -661,21 +704,88 @@ export default function Room() {
       {Object.entries(remoteStreams).map(([peerId, stream]) => {
         if (!stream.getAudioTracks().length) return null;
 
+        const volume = remoteVolumes[peerId] ?? 1;
+        const participantName = participants[peerId]?.name || "Convidado";
+
         return (
-          <audio
-            key={peerId}
-            autoPlay
-            playsInline
-            ref={(element) => {
-              if (!element) return;
+          <div className="remote-audio-control" key={`audio-${peerId}`}>
+            <audio
+              autoPlay
+              playsInline
+              ref={(element) => {
+                if (!element) return;
 
-              element.srcObject = stream;
+                remoteAudioElementsRef.current[peerId] = element;
+                element.srcObject = stream;
 
-              element.play().catch(() => {
-                setAudioBlocked(true);
-              });
-            }}
-          />
+                try {
+                  let audioContext = remoteAudioContextsRef.current[peerId];
+
+                  if (!audioContext) {
+                    audioContext = new AudioContext();
+
+                    const source = audioContext.createMediaElementSource(element);
+                    const gain = audioContext.createGain();
+
+                    source.connect(gain);
+                    gain.connect(audioContext.destination);
+
+                    remoteAudioContextsRef.current[peerId] = audioContext;
+                    remoteGainNodesRef.current[peerId] = gain;
+                  }
+
+                  remoteGainNodesRef.current[peerId].gain.value = volume;
+
+                  if (audioContext.state === "suspended") {
+                    audioContext.resume().catch(() => {});
+                  }
+                } catch (err) {
+                  console.warn("Controle individual de volume indisponível:", err);
+                  element.volume = Math.min(1, volume);
+                }
+
+                element.play().catch(() => {
+                  setAudioBlocked(true);
+                });
+              }}
+            />
+
+            <div className="remote-volume-row">
+              <span className="remote-volume-name">{participantName}</span>
+
+              <button
+                type="button"
+                className="volume-btn"
+                onClick={() => setRemoteVolume(peerId, volume - 0.1)}
+                title="Diminuir volume"
+              >
+                −
+              </button>
+
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={volume}
+                onChange={(e) => setRemoteVolume(peerId, e.target.value)}
+                aria-label={`Volume de ${participantName}`}
+              />
+
+              <button
+                type="button"
+                className="volume-btn"
+                onClick={() => setRemoteVolume(peerId, volume + 0.1)}
+                title="Aumentar volume"
+              >
+                +
+              </button>
+
+              <span className="volume-value">
+                {Math.round(volume * 100)}%
+              </span>
+            </div>
+          </div>
         );
       })}
 
