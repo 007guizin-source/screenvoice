@@ -28,6 +28,9 @@ export default function Room() {
   const screenStreamRef = useRef(null);
   const peerConnectionsRef = useRef({});
   const remoteStreamsRef = useRef({});
+  const remoteVideoRef = useRef(null);
+  const localVideoRef = useRef(null);
+
 
   const setRemoteTrack = useCallback((peerId, track) => {
     let stream = remoteStreamsRef.current[peerId];
@@ -175,6 +178,30 @@ export default function Room() {
     },
     [removeRemotePeer]
   );
+
+  useEffect(() => {
+    const video = remoteVideoRef.current;
+    if (!video) return;
+
+    video.srcObject = remoteSharingStream || null;
+
+    if (remoteSharingStream) {
+      video.play().catch(() => {
+        setAudioBlocked(true);
+      });
+    }
+  }, [remoteSharingStream]);
+
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+
+    video.srcObject = sharing ? screenStreamRef.current || null : null;
+
+    if (sharing && screenStreamRef.current) {
+      video.play().catch(() => {});
+    }
+  }, [sharing]);
 
   useEffect(() => {
     if (!joined) return;
@@ -547,13 +574,14 @@ export default function Room() {
     );
   }
 
-  const sharingPeerId = Object.entries(participants).find(
-    ([, participant]) => participant.sharing
-  )?.[0];
+  // A transmissão de vídeo é detectada pelo track recebido de fato.
+  // Isso evita a tela ficar vazia se o evento "screen-state" chegar
+  // antes/depois da renegociação WebRTC.
+  const remoteSharingEntry = Object.entries(remoteStreams).find(
+    ([, stream]) => stream.getVideoTracks().some((track) => track.readyState !== "ended")
+  );
 
-  const remoteSharingStream = sharingPeerId
-    ? remoteStreams[sharingPeerId]
-    : null;
+  const remoteSharingStream = remoteSharingEntry?.[1] || null;
 
   return (
     <div className="room">
@@ -574,30 +602,18 @@ export default function Room() {
       <div className="screen-area">
         {sharing ? (
           <video
+            ref={localVideoRef}
             className="screen-video"
             autoPlay
             playsInline
             muted
-            ref={(element) => {
-              if (element && screenStreamRef.current) {
-                element.srcObject = screenStreamRef.current;
-              }
-            }}
           />
         ) : remoteSharingStream?.getVideoTracks().length ? (
           <video
+            ref={remoteVideoRef}
             className="screen-video"
             autoPlay
             playsInline
-            ref={(element) => {
-              if (!element) return;
-
-              element.srcObject = remoteSharingStream;
-
-              element.play().catch(() => {
-                setAudioBlocked(true);
-              });
-            }}
           />
         ) : (
           <p className="no-share">
