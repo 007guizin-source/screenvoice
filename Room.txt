@@ -179,16 +179,6 @@ export default function Room() {
     [removeRemotePeer]
   );
 
-  // A transmissão de vídeo é detectada pelo track recebido de fato.
-  // Isso evita a tela ficar vazia se o evento "screen-state" chegar
-  // antes/depois da renegociação WebRTC.
-  const remoteSharingEntry = Object.entries(remoteStreams).find(
-    ([, stream]) =>
-      stream.getVideoTracks().some((track) => track.readyState !== "ended")
-  );
-
-  const remoteSharingStream = remoteSharingEntry?.[1] || null;
-
   useEffect(() => {
     const video = remoteVideoRef.current;
     if (!video) return;
@@ -583,6 +573,15 @@ export default function Room() {
       </div>
     );
   }
+
+  // A transmissão de vídeo é detectada pelo track recebido de fato.
+  // Isso evita a tela ficar vazia se o evento "screen-state" chegar
+  // antes/depois da renegociação WebRTC.
+  const remoteSharingEntry = Object.entries(remoteStreams).find(
+    ([, stream]) => stream.getVideoTracks().some((track) => track.readyState !== "ended")
+  );
+
+  const remoteSharingStream = remoteSharingEntry?.[1] || null;
 
   return (
     <div className="room">
