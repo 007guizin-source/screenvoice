@@ -625,7 +625,9 @@ export default function Room() {
 
       {!sharing &&
         Object.entries(remoteStreams).map(([peerId, stream]) => {
-          if (participants[peerId]?.sharing) return null;
+          // O áudio do participante continua sendo reproduzido mesmo quando ele
+          // está compartilhando a tela. A tela usa o elemento de vídeo acima,
+          // mas a voz deve continuar no elemento <audio>.
           if (!stream.getAudioTracks().length) return null;
 
           return (
