@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ScreenVoice</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app">
+    <section id="home" class="card home-card">
+      <div class="logo">SV</div>
+      <h1>ScreenVoice</h1>
+      <p class="muted">Converse por áudio e compartilhe sua tela.</p>
+
+      <label for="name">Seu nome</label>
+      <input id="name" maxlength="30" placeholder="Ex.: Gui" autocomplete="name" />
+
+      <div class="divider"><span>CRIAR UMA SALA</span></div>
+      <button id="createBtn" class="primary">Criar sala</button>
+
+      <div class="divider"><span>OU ENTRAR</span></div>
+      <input id="roomCode" maxlength="32" placeholder="Código da sala" />
+      <button id="joinBtn" class="secondary">Entrar na sala</button>
+
+      <p id="homeError" class="error"></p>
+
+      <p class="developer-credit">desenvolvedor <span>GHZ</span></p>
+    </section>
+
+    <section id="room" class="room hidden">
+      <header class="topbar">
+        <div>
+          <div class="brand">ScreenVoice</div>
+          <div class="room-label">Sala <strong id="roomCodeLabel"></strong></div>
+        </div>
+        <button id="copyBtn" class="small">🔗 Copiar convite</button>
+      </header>
+
+      <div class="content">
+        <section class="stage">
+          <div id="emptyStage" class="empty-stage">
+            <div class="big-icon">🖥️</div>
+            <h2>Ninguém está compartilhando a tela</h2>
+            <p>Quando alguém iniciar uma transmissão, ela aparecerá aqui.</p>
+          </div>
+          <div id="screens" class="screens"></div>
+        </section>
+
+        <aside class="sidebar">
+          <div class="side-title">Pessoas <span id="count">0</span></div>
+          <div id="people" class="people"></div>
+
+          <div class="controls">
+            <button id="micBtn" class="control">🎤 <span>Microfone</span></button>
+            <button id="audioBtn" class="control">🔊 <span>Ativar áudio</span></button>
+            <button id="screenBtn" class="control">🖥️ <span>Compartilhar tela</span></button>
+            <button id="leaveBtn" class="control danger">🚪 <span>Sair</span></button>
+          </div>
+
+          <div id="status" class="status">Conectando...</div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
