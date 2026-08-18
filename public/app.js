@@ -760,9 +760,9 @@ function renderRemoteStream(id, stream, name) {
     label.textContent = name;
 
     const audio = document.createElement("audio");
-    audio.autoplay = false;
+    audio.autoplay = true;
     audio.controls = false;
-    audio.muted = true;
+    audio.muted = !audioUnlocked;
     audio.volume = 1;
     audio.className = "remote-screen-audio";
     audio.id = `audio-${id}`;
@@ -818,4 +818,5 @@ leaveBtn.onclick = async () => {
 window.addEventListener("beforeunload", () => {
   socket.emit("leave-room");
 });
+
 
