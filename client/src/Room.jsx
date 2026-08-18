@@ -88,6 +88,30 @@ export default function Room() {
         });
       }
 
+      // Mantém o áudio de voz estável: evita DTX (que pode soar como
+      // cortes em algumas combinações de microfone/rede) e dá ao Opus
+      // largura de banda suficiente para voz com qualidade.
+      pc.getSenders()
+        .filter((sender) => sender.track?.kind === "audio")
+        .forEach((sender) => {
+          try {
+            const params = sender.getParameters();
+            if (!params.encodings?.length) return;
+
+            params.encodings = params.encodings.map((encoding) => ({
+              ...encoding,
+              maxBitrate: 40000,
+              dtx: false
+            }));
+
+            sender.setParameters(params).catch((err) => {
+              console.debug("Não foi possível ajustar o áudio Opus:", err);
+            });
+          } catch (err) {
+            console.debug("Não foi possível ajustar os parâmetros de áudio:", err);
+          }
+        });
+
       pc.onicecandidate = ({ candidate }) => {
         if (!candidate) return;
 
@@ -222,9 +246,15 @@ export default function Room() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            // Mantém cancelamento de eco, mas evita o processamento
+            // agressivo que pode cortar sílabas/começos de palavras.
             echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+            sampleRate: 48000,
+            sampleSize: 16,
+            latency: 0.01
           }
         });
 
@@ -234,6 +264,11 @@ export default function Room() {
         }
 
         localStreamRef.current = stream;
+
+        const audioTrack = stream.getAudioTracks()[0];
+        if (audioTrack) {
+          console.log("Microfone ativo:", audioTrack.getSettings());
+        }
       } catch (err) {
         console.error(err);
         setMediaError(
