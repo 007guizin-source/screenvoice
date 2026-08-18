@@ -319,53 +319,55 @@ export default function Room() {
   }
 
   async function startScreenShare() {
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-      });
-      screenStreamRef.current = stream;
-      const track = stream.getVideoTracks()[0];
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+    });
 
-      track.onended = () => {
-        stopScreenShare();
-      };
+    screenStreamRef.current = stream;
 
+    const videoTrack = stream.getVideoTracks()[0];
+
+    videoTrack.onended = () => {
+      stopScreenShare();
+    };
+
+    // Envia vídeo E áudio da transmissão para todos os peers
+    stream.getTracks().forEach((track) => {
       Object.values(peerConnectionsRef.current).forEach((pc) => {
         pc.addTrack(track, stream);
       });
-
-      socketRef.current?.emit('screen-share-started');
-      setSharing(true);
-    } catch (err) {
-      // Usuário cancelou o picker ou negou permissão — não é um erro fatal.
-      console.warn('Compartilhamento de tela cancelado:', err);
-    }
-  }
-
-  function stopScreenShare() {
-    const stream = screenStreamRef.current;
-    if (!stream) return;
-    const track = stream.getVideoTracks()[0];
-
-    Object.values(peerConnectionsRef.current).forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track === track);
-      if (sender) pc.removeTrack(sender);
     });
 
-    stream.getTracks().forEach((t) => t.stop());
-    screenStreamRef.current = null;
-    socketRef.current?.emit('screen-share-stopped');
-    setSharing(false);
+    socketRef.current?.emit('screen-share-started');
+    setSharing(true);
+  } catch (err) {
+    console.warn('Compartilhamento de tela cancelado:', err);
   }
+}
 
-  function toggleScreenShare() {
-    if (sharing) {
-      stopScreenShare();
-    } else {
-      startScreenShare();
-    }
-  }
+  function stopScreenShare() {
+  const stream = screenStreamRef.current;
+  if (!stream) return;
+
+  const tracks = stream.getTracks();
+
+  Object.values(peerConnectionsRef.current).forEach((pc) => {
+    pc.getSenders().forEach((sender) => {
+      if (sender.track && tracks.includes(sender.track)) {
+        pc.removeTrack(sender);
+      }
+    });
+  });
+
+  tracks.forEach((track) => track.stop());
+
+  screenStreamRef.current = null;
+
+  socketRef.current?.emit('screen-share-stopped');
+  setSharing(false);
+}
 
   async function copyInvite() {
     const link = `${window.location.origin}/room/${roomId}`;
