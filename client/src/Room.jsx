@@ -623,30 +623,26 @@ export default function Room() {
         )}
       </div>
 
-      {!sharing &&
-        Object.entries(remoteStreams).map(([peerId, stream]) => {
-          // O áudio do participante continua sendo reproduzido mesmo quando ele
-          // está compartilhando a tela. A tela usa o elemento de vídeo acima,
-          // mas a voz deve continuar no elemento <audio>.
-          if (!stream.getAudioTracks().length) return null;
+      {Object.entries(remoteStreams).map(([peerId, stream]) => {
+        if (!stream.getAudioTracks().length) return null;
 
-          return (
-            <audio
-              key={peerId}
-              autoPlay
-              playsInline
-              ref={(element) => {
-                if (!element) return;
+        return (
+          <audio
+            key={peerId}
+            autoPlay
+            playsInline
+            ref={(element) => {
+              if (!element) return;
 
-                element.srcObject = stream;
+              element.srcObject = stream;
 
-                element.play().catch(() => {
-                  setAudioBlocked(true);
-                });
-              }}
-            />
-          );
-        })}
+              element.play().catch(() => {
+                setAudioBlocked(true);
+              });
+            }}
+          />
+        );
+      })}
 
       <div className="participants">
         <div className="participant">
