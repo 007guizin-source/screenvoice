@@ -38,3 +38,16 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+
+.screen-share-help {
+  margin: 10px auto 16px;
+  max-width: 900px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  color: #b9bcc8;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}

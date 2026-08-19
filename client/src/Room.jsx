@@ -501,15 +501,30 @@ export default function Room() {
 
   async function startScreenShare() {
     try {
+      // Opções pensadas para jogos: o navegador continua controlando a
+      // janela que pode ser capturada, mas pedimos explicitamente suporte
+      // a janelas/monitores e áudio do sistema. Isso evita priorizar a aba
+      // atual e melhora a chance de o jogo aparecer no seletor.
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           frameRate: {
-            ideal: 30,
+            ideal: 60,
             max: 60
           }
         },
-        audio: true
+        audio: true,
+        preferCurrentTab: false,
+        selfBrowserSurface: "exclude",
+        surfaceSwitching: "include",
+        monitorTypeSurfaces: "include",
+        systemAudio: "include"
       });
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("O navegador não forneceu uma fonte de vídeo.");
+      }
 
       screenStreamRef.current = stream;
 
@@ -700,6 +715,14 @@ export default function Room() {
           </p>
         )}
       </div>
+
+      {!sharing && !remoteSharingStream && (
+        <div className="screen-share-help">
+          🎮 Para jogos como VALORANT, use <strong>Janela</strong> ou <strong>Tela inteira</strong>
+          no seletor do navegador. Se o jogo estiver em tela cheia exclusiva e não aparecer,
+          use <strong>Janela sem bordas</strong> no jogo ou escolha <strong>Tela inteira</strong>.
+        </div>
+      )}
 
       {Object.entries(remoteStreams).map(([peerId, stream]) => {
         if (!stream.getAudioTracks().length) return null;
