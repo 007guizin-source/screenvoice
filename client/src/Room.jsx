@@ -23,6 +23,7 @@ export default function Room() {
   const [connectionError, setConnectionError] = useState("");
   const [mediaError, setMediaError] = useState("");
   const [audioBlocked, setAudioBlocked] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -36,6 +37,7 @@ export default function Room() {
 
   const remoteVideoRef = useRef(null);
   const localVideoRef = useRef(null);
+  const screenAreaRef = useRef(null);
 
 
   const setRemoteTrack = useCallback((peerId, track) => {
@@ -240,13 +242,25 @@ export default function Room() {
     const video = remoteVideoRef.current;
     if (!video) return;
 
-    video.srcObject = remoteSharingStream || null;
+    // O elemento de vídeo recebe SOMENTE o track de vídeo.
+    // O áudio da transmissão (e a voz) fica nos elementos <audio>,
+    // evitando que o áudio do compartilhamento seja perdido/duplicado.
+    const videoOnlyStream = remoteSharingStream
+      ? new MediaStream(remoteSharingStream.getVideoTracks())
+      : null;
 
-    if (remoteSharingStream) {
-      video.play().catch(() => {
-        setAudioBlocked(true);
-      });
+    video.srcObject = videoOnlyStream;
+
+    if (videoOnlyStream) {
+      video.play().catch(() => {});
     }
+
+    return () => {
+      if (video.srcObject === videoOnlyStream) {
+        video.pause();
+        video.srcObject = null;
+      }
+    };
   }, [remoteSharingStream]);
 
   useEffect(() => {
@@ -501,33 +515,19 @@ export default function Room() {
 
   async function startScreenShare() {
     try {
-      // Opções pensadas para jogos: o navegador continua controlando a
-      // janela que pode ser capturada, mas pedimos explicitamente suporte
-      // a janelas/monitores e áudio do sistema. Isso evita priorizar a aba
-      // atual e melhora a chance de o jogo aparecer no seletor.
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           frameRate: {
-            ideal: 60,
+            ideal: 30,
             max: 60
           }
         },
-        audio: true,
-        preferCurrentTab: false,
-        selfBrowserSurface: "exclude",
-        surfaceSwitching: "include",
-        monitorTypeSurfaces: "include",
-        systemAudio: "include"
+        audio: true
       });
-
-      const videoTrack = stream.getVideoTracks()[0];
-      if (!videoTrack) {
-        stream.getTracks().forEach((track) => track.stop());
-        throw new Error("O navegador não forneceu uma fonte de vídeo.");
-      }
 
       screenStreamRef.current = stream;
 
+      const videoTrack = stream.getVideoTracks()[0];
 
       if (videoTrack) {
         videoTrack.onended = () => stopScreenShare();
@@ -623,14 +623,43 @@ export default function Room() {
   }
 
   async function unlockAudio() {
-    const elements = document.querySelectorAll("audio, video");
+    await Promise.all(
+      Object.values(remoteAudioContextsRef.current).map((context) =>
+        context?.resume?.().catch?.(() => {})
+      )
+    );
 
+    const elements = document.querySelectorAll("audio, video");
     await Promise.all(
       [...elements].map((element) => element.play().catch(() => {}))
     );
 
     setAudioBlocked(false);
   }
+
+  async function toggleFullscreen() {
+    const element = screenAreaRef.current;
+    if (!element) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await element.requestFullscreen();
+      }
+    } catch (err) {
+      console.warn("Não foi possível abrir a transmissão em tela cheia:", err);
+    }
+  }
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === screenAreaRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
 
   if (!joined) {
     return (
@@ -692,7 +721,12 @@ export default function Room() {
         </div>
       )}
 
-      <div className="screen-area">
+      <div
+        ref={screenAreaRef}
+        className="screen-area"
+        onDoubleClick={toggleFullscreen}
+        title="Duplo clique para tela cheia"
+      >
         {sharing ? (
           <video
             ref={localVideoRef}
@@ -714,14 +748,6 @@ export default function Room() {
           </p>
         )}
       </div>
-
-      {!sharing && !remoteSharingStream && (
-        <div className="screen-share-help">
-          🎮 Para jogos como VALORANT, use <strong>Janela</strong> ou <strong>Tela inteira</strong>
-          no seletor do navegador. Se o jogo estiver em tela cheia exclusiva e não aparecer,
-          use <strong>Janela sem bordas</strong> no jogo ou escolha <strong>Tela inteira</strong>.
-        </div>
-      )}
 
       {Object.entries(remoteStreams).map(([peerId, stream]) => {
         if (!stream.getAudioTracks().length) return null;
@@ -838,6 +864,15 @@ export default function Room() {
           {sharing
             ? "Parar de compartilhar"
             : "Compartilhar tela"}
+        </button>
+
+        <button
+          className="btn secondary"
+          onClick={toggleFullscreen}
+          disabled={!sharing && !remoteSharingStream}
+          title={!sharing && !remoteSharingStream ? "Nenhuma transmissão ativa" : "Abrir transmissão em tela cheia"}
+        >
+          {isFullscreen ? "⛶ Sair da tela cheia" : "⛶ Tela cheia"}
         </button>
 
         <button className="btn secondary" onClick={copyInvite}>
