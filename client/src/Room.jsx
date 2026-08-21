@@ -528,7 +528,6 @@ export default function Room() {
 
       screenStreamRef.current = stream;
 
-      const videoTrack = stream.getVideoTracks()[0];
 
       if (videoTrack) {
         videoTrack.onended = () => stopScreenShare();
